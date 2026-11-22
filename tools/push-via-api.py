@@ -197,8 +197,18 @@ def publish_release():
         })
         print("release:", rel.get("html_url"))
     except urllib.error.HTTPError as exc:
-        print("release create failed:", exc.code)
-        return
+        if exc.code != 422:
+            print("release create failed:", exc.code)
+            return
+        # 该 tag 已有 Release：更新说明（幂等），已上传过的同名资产不再重复上传
+        try:
+            rel = api("GET", "/repos/%s/releases/tags/%s" % (REPO, tag))
+            rel = api("PATCH", "/repos/%s/releases/%s" % (REPO, rel["id"]),
+                      {"name": "EdgeGestureGuard " + version, "body": body})
+            print("release: notes updated", rel.get("html_url"))
+        except urllib.error.HTTPError as patch_exc:
+            print("release update failed:", patch_exc.code)
+            return
 
     apk_dir = "dist"
     apks = [f for f in (os.listdir(apk_dir) if os.path.isdir(apk_dir) else [])
@@ -207,6 +217,14 @@ def publish_release():
         print("release: no apk matched for", version)
         return
     path = os.path.join(apk_dir, apks[0])
+    try:
+        existing = api("GET", "/repos/%s/releases/%s/assets" % (REPO, rel["id"]))
+        for asset in existing:
+            if asset.get("name") == apks[0]:
+                print("release: asset already present:", asset.get("name"), asset.get("size"), "bytes")
+                return
+    except urllib.error.HTTPError as list_exc:
+        print("release: list assets failed:", list_exc.code)
     data = open(path, "rb").read()
     up = urllib.request.Request(
         "https://uploads.github.com/repos/%s/releases/%s/assets?name=%s"
