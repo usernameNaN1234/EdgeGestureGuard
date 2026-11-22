@@ -779,239 +779,47 @@ ZONE SHADE action=DOWN rawY=64 screenHeight=2400 inTopZone=true inBottomZone=fal
 下拉控制中心能拦住，**但从状态栏（时钟那条）往下拉仍然能拉开**。
 这通常意味着那一下走的是**另一个窗口根**（例如 `StatusBarWindowView` 之类的独立窗口）。
 
-1.5.2 因此加了三件事：
-
-1. 候选补全：`statusbar.phone.StatusBarWindowView`、`shade.NotificationPanelView`、
-   `shade.ui.NotificationPanelViewController`、`scene.ui.view.SceneContainerView`；
-2. **动态根视图发现**：第一次收到触摸时打一行
-   `SHADE touched class=… | windowRoot=… | viewAt=… | viewSize=…`，
-   并把真实窗口根的触摸方法**当场补挂**（不再假设类名）；
-3. **SHADE-TOUCH 逐次日志**（限流 500ms）：`SHADE-TOUCH <类#方法> rawY=… y=… blocked=…`，
-   用来回答"状态栏这一下到底有没有走到 Hook"。
-
-配合**诊断自动导出**（见 15.7），不需要再手工复制 logcat。
-
 ---
 
-# 14. 音游场景：推荐配置与调试步骤
+## 1.9.0：只保留核心 + 热路径重构 + UI 重做
 
-## 14.1 推荐配置（打音游的典型值）
+这一版是减法版本。三件事：删掉不产生收益的代码、把触摸热路径压到极限、把控制器 UI 做正常。
 
-| 项 | 推荐 | 理由 |
-|---|---|---|
-| 左/右边缘返回 | **按需**（音游里有左右滑条时再开） | 有些音游左右滑动是操作，开了会误伤 |
-| 顶部下拉 | **开** | 音游判定区在下方，顶部 12% 基本不会用到；下拉会打断连击 |
-| 底部上滑 | **开（实验性）** | 拇指托在屏幕下沿时最容易误触 Home；是否能拦住看 `seen=` |
-| 顶部区比例 | **10%~12%** | 再大就会碰到游戏 UI 顶栏 |
-| 底部区比例 | **10%~12%** | 覆盖系统手势区即可，不要超过 15%（会碰判定线） |
-| 验证模式 | **先开，确认后再关** | 只看日志不动手，避免"以为生效了" |
+### 删掉的东西（以及为什么）
 
-一键做法：切到音游（让它成为前台）→ 打开控制器 → 点 **「音游预设（顶+底）」**。
-它只改"最近前台应用"的顶部/底部两项，**不动左右**。
-
-## 14.2 调试步骤（先日志、后拦截）
-
-```
-1) 安装 1.4.0 → LSPosed 作用域只勾 System UI → 重启 SystemUI/手机
-   （装完新 APK 不要立刻重启：先打开一次 LSPosed Manager 让它登记新包，约 1 分钟后再重启）
-2) 打开控制器，确认状态卡：
-   · 左右返回 Hook：已挂载
-   · 通知栏下拉 Hook：已挂载
-   · 底部上滑（策略 A）：… + 实测计数
-3) 阈值/验证 → 勾「验证模式」→ 保存
-4) 进音游，分别做三种动作，看 logcat 的 ZONE 行：
-   - 顶部往下拉      → 期望 inTopZone=true
-   - 底部往上滑      → 期望 inBottomZone=true（若从来没有，策略 A 不可用）
-   - 左/右边缘返回    → 期望 inTopZone=false inBottomZone=false
-5) 三个坐标都对 → 关掉验证模式 → 再试：
-   - 顶部下拉是否还被拦下（应被拦）
-   - 底部上滑是否仍回桌面（仍回 → 换策略 B）
-   - 屏幕中部正常点按是否受影响（应完全不受影响）
-6) 若某一步不对，把 ZONE / BLOCK / shade 三组日志行贴出来即可定位（不需要改代码先猜）
-```
-
-## 14.3 性能与手感
-
-- 热路径（每次 DOWN）：读 2 个 volatile 字段（规则表 / 配置）+ 1 次 hash 查表 + 2 次浮点比较；
-  **没有 Binder、没有 IO、没有锁**（事件流表是 `ConcurrentHashMap` 无锁读）。
-- 无规则 / 前台不是目标应用时：`rules.size()==0` 或 `Decision.any()==false` 立即返回，等同于模块没启动。
-- 只有存在底部/顶部规则（或验证模式）时才做区域计数，平时连 `getRawY()` 都不读。
-- 屏幕高度缓存 60 秒；`rawY` 超出缓存高度（旋转/分辨率变化）时立即重算。
----
-
-# 15. 游戏模式（1.5.0）：寄生通知 / 磁贴 / 锁屏自动退出
-
-## 15.1 为什么换了一套用法
-
-打音游的节奏是**一局一局**的：开局前要「现在开始防误触」，打完这一把就该恢复正常。
-让用户每换一个游戏都去列表里勾四个复选框，既慢又容易忘关（忘关的代价是日常完全没法下拉通知栏）。
-
-所以 1.5.0 增加一个**会话式总闸**，与原来的「按应用勾选」**并存**：
-
-| 模式 | 怎么开 | 作用范围 | 何时失效 |
-|---|---|---|---|
-| 常驻模式（1.3 起） | 应用列表里勾「顶部下拉 / 底部上滑」 | **只对勾选的应用** | 手动取消勾选 |
-| **游戏模式（1.5 新增）** | 通知按钮 / 磁贴 / 控制器「游戏模式」按钮 | **全局**（顶部下拉 + 底部上滑，**不含左右返回**） | **锁屏后解锁** / 通知按钮 / 磁贴 / 控制器按钮 / SystemUI 重启 |
-
-判定式：`是否屏蔽 = 该应用规则命中 || 游戏模式已开`
-
-左/右返回**不受游戏模式影响**：它一直是「按应用规则常驻」，老用户用法一个字都不用改。
-
-## 15.2 三个入口（等价，都只是「遥控器」）
-
-| 入口 | 怎么用 | 说明 |
-|---|---|---|
-| **寄生通知** | 开启后常驻一条低优先级通知，按钮「退出游戏模式」 | 用 `PendingIntent` 指向静态接收器，**App 进程被回收了也能点** |
-| **控制中心磁贴** | 下拉 QS → 编辑 → 添加「游戏模式」 | 磁贴标签随状态变：`游戏模式 已开` |
-| 控制器按钮 | App 内「游戏模式：已关（点此启用 顶+底）」 | 方便验证与排障 |
-
-> 磁贴需要你在控制中心里手动添加（系统不允许 App 自己加）。
-
-## 15.3 退出：主出口是锁屏（刻意设计）
-
-游戏模式会屏蔽**顶部下拉** —— 而通知栏、控制中心都在下拉里。也就是说：
-**开起来之后，通知按钮和磁贴这两条退出路很可能被自己堵住了。**
-
-所以主出口是锁屏：
-
-```
-开启游戏模式
-  → 打游戏
-  → 锁屏（SCREEN_OFF）
-  → 解锁（USER_PRESENT）
-  → 自动退出，系统手势全部恢复
-```
-
-实现要点（`ArmController`，**跑在 SystemUI 进程里**）：
-
-实现要点（`ArmController`，**跑在 SystemUI 进程里**）——**两条路，短路一条也能退出**：
-
-| 路径 | 触发 | 动作 |
-|---|---|---|
-| 快路径（广播） | `ACTION_SCREEN_OFF` | `sawLocked = true`（不看 armed，先记账） |
-| 快路径（广播） | `ACTION_SCREEN_ON` | 1.2s 后复查一次是否已解锁 |
-| 快路径（广播） | `ACTION_USER_PRESENT` | `armed && sawLocked` → `disarm(auto: user-present)` |
-| **保险丝（自检）** | armed 期间每 **3s** 一次 | `息屏 or keyguard 仍锁着` → 记账；`亮屏且已解锁` → `disarm(auto: unlocked)` |
-
-> **1.5.1 的 bug（已修）**：锁屏监听用的是 `RECEIVER_NOT_EXPORTED` 注册系统广播，
-> 与能正常工作的规则接收器（`RECEIVER_EXPORTED`）标志不同 —— 实测在这台机器上
-> 系统广播根本没送到，所以"锁屏后解锁不退出"。1.5.3 改为 `RECEIVER_EXPORTED`
-> （这三个都是 protected broadcast，只有系统能发，不存在被第三方伪造的风险），
-> **并额外加了不依赖任何广播的 3s 自检**，即使 ROM 完全不发 `USER_PRESENT` 也一定能退出。
->
-> 3s 自检只在 armed 期间运行，退出即 `removeCallbacks`，不会长期耗电。
-
-**1.5.5：可以不自动退出。** 「阈值/验证」里新增「锁屏→解锁后**保持**游戏模式」（默认关）。
-打音游时锁一下屏再回来很常见，自动退出会让人误以为"功能没生效" —— 这个开关就是给这种情况的。
-开启后 `GAME MODE kept after unlock (keepOnUnlock=true)` 会出现在诊断里。
-
-**为什么状态放在 SystemUI 而不是 App 的 SharedPreferences**：SystemUI 常驻，锁屏/解锁广播一定收得到；
-App 随时可能被冻结或杀死。放 App 会出现「已经锁屏解锁了但 SystemUI 还在拦」的鬼状态。
-App 侧只缓存「最近一次已知状态」用来画磁贴/通知。
-
-**会话不跨重启**：SystemUI 重启天然复位；`BOOT_COMPLETED` 时 App 侧也会清掉缓存与通知，
-避免磁贴显示「已开」但实际没拦。
-
-## 15.4 三条安全阀（防止把自己锁死）
-
-1. **前台未知 → 不拦**（fail-open）：拿不到前台包名时，游戏模式不作用于任何触摸。
-2. **前台是本模块控制器 → 不拦**：保证你总能打开 App 把游戏模式关掉。
-3. **锁屏永远可达**：即使通知/磁贴被自己屏蔽了，锁屏→解锁一定能把状态清掉。
-
-## 15.5 权限与可见性
-
-| 项 | 需要什么 | 没有会怎样 |
-|---|---|---|
-| 常驻通知 | `POST_NOTIFICATIONS`（API 33+ 运行时授权，App 首次启动会请求） | 通知不显示；**磁贴与锁屏退出仍然可用** |
-| QS 磁贴 | 无额外权限，需在控制中心手动添加 | — |
-| 锁屏退出 | 无 | — |
-
-## 15.7 诊断自动导出（1.5.2，不用再复制 logcat）
-
-链路：
-
-```
-SystemUI(Hook) ──日志──> Logx.sink ──> HookRuntime 内存环形缓冲(300 行)
-      │                                      │
-      └── 状态变化/请求 ──> StatusReport.diag ─┘
-                                   │  广播
-                                   ▼
-                        App: StatusReceiver
-                                   │
-                                   ▼
-              /storage/emulated/0/Android/media/com.edgeguard.gesture/
-                  edgeguard-diag-latest.txt        ← 最新的（覆盖写）
-                  edgeguard-diag-20260101-120000.txt  ← 历史快照（保留最近 5 个）
-```
-
-- **何时自动写**：每次收到 SystemUI 的状态回推（切回 App 会自动请求一次；开关游戏模式、
-  改规则也会触发），以及在通知/磁贴上操作之后。
-- **手动写**：控制器底部「导出诊断」按钮。
-- **文件内容**：完整状态字段 + 规则 JSON + Hook 进程日志尾部 200 行 + 原始状态 JSON。
-- **为什么放 `Android/media`**：`/Android/data/<包名>` 对其他 App 是禁止访问的，
-  而 `/Android/media/<包名>` 允许 App 无权限写入、且其它有存储权限的工具可以读取 ——
-  这样"用户不用复制、AI 直接读文件"才成立。
-
-## 15.8 阈值到底控制什么（1.5.5 起标签带像素）
-
-| 滑杆 | 含义 | 什么时候才有可观察效果 |
-|---|---|---|
-| 顶部屏蔽区 | 屏幕顶部多高的一条会被吃掉：**起手 `rawY ≤ 屏高 × 比例`** 才算顶部区 | 一直有效（顶部下拉拦截在 SystemUI 内） |
-| 底部屏蔽区 | 屏幕底部多高的一条算"底部手势区" | **只在策略 B（Launcher）生效后才参与判定**；策略 A 默认只观测，所以现在调它没变化 |
-
-参考：本机 3200px 高、状态栏约 70~110px、底部手势条约 100~130px。
-
-- 12%（约 384px）是保守默认值；
-- 调到 2%（约 64px）时，**从状态栏偏下起手就会漏拦** —— 所以别把顶部调太小；
-- 底部同理：策略 B 生效前调它没有任何效果（1.5.5 的状态卡会明确写「未注入 → 底部阈值现在没有效果」）。
-
-## 15.6 排障
-
-| 现象 | 原因 / 处理 |
+| 删除项 | 原因 |
 |---|---|
-| 状态卡显示「SystemUI 里仍在运行 v1.2.0」 | **新代码还没进 SystemUI**：装完 APK → 打开一次 LSPosed Manager 让它登记新包 → 约 1 分钟后重启手机（或 root 下 `killall com.android.systemui`） |
-| 状态卡「通知栏下拉 Hook：未挂载」且自检记录是旧版本 | 同上：旧版本里根本没有这道 Hook，先让新版本生效再判断 |
-| 底部「实测计数：无」 | 旧版本不带该字段；1.5.x 生效后显示 `seen=N blocked=N` |
-| 通知不出现 | 检查系统设置里本 App 的通知权限（API 33+ 需允许）；渠道名「游戏模式」 |
-| 磁贴找不到 | 下拉控制中心 → 编辑（铅笔）→ 把「游戏模式」拖进可见区域 |
-| 游戏模式开了但没效果 | logcat 看两行：`GAME MODE ON` 与 `BLOCK ... armed=true`；只有前者说明顶部/底部 Hook 没挂上（看状态卡） |
-| 想确认锁屏退出 | 诊断文件里应有：`game-mode watchdog started` →（锁屏）`ARM-LOCK locked/screen-off detected` →（解锁）`GAME MODE OFF (auto: unlocked)` |
-| 锁屏解锁不退出（1.5.1 及更早） | 已知 bug：系统广播用了 NOT_EXPORTED，收不到。1.5.3 已修（EXPORTED + 3s 自检） |
-| 不想复制日志 | 用「导出诊断」（见 15.7）：切回 App 会自动导出，或点按钮 |
----
+| 无障碍前台助手 `ForegroundAccessibilityService` | 用户要多开一个无障碍服务只为把包名推给 SystemUI；`TaskStackListener` + ActivityTaskManager 已经够用 |
+| `ForegroundTracker` 的 UsageStats 兜底 | 每次要扫最近 60 秒 `UsageEvents`（Binder + 遍历），只在 ATMS 完全不可用时才有用，实际从未走到 |
+| 导航栏滑出抑制 `NavBarHooks` | 一直 `NAV_HOOK_ENABLED = false`；transient bar 由 system_server 的 DisplayPolicy 发起，用户态挂不上，只是死代码 |
+| 「验证模式」`verifyOnly` | 调试期用来对照日志；却让热路径多一个分支、UI 多一个开关。拦截本身有限流日志，排障足够 |
+| 「策略 A 吞事件」`bottomConsume` | 实测在 SystemUI 的返回手势通道上消费底部事件**拦不住 Home**，却让游戏窗口收不到底部 12% 的触摸 —— 对音游纯亏 |
+| 观测计数器 `bottomZoneSeen / bottomZoneBlocked / topZoneSeen / shadeSeen` | 只为证明策略 A 的结论存在；策略 A 删了它们就没有意义 |
+| `StatusFile`（写 /sdcard 的轨迹文件） | 每次 `Xlog.step` 都做一次文件 IO，而 step 会被拦截日志调用 —— 历史耗电点。现在日志只进内存环形缓冲 |
+| 规则推送时给 7 个桌面包各发一次广播 | 只有打开「Launcher 底部 Hook」才需要，否则每次改规则都白发 7 个广播 |
 
-# 16. 1.5.7 构建验证（本机实跑）
+### 热路径（`HookLogic.gate`）的新顺序
 
-| 步骤 | 工具 | 结果 |
-|---|---|---|
-| 资源编译/链接 | `aapt2 16.0.0.4` | 通过（`versionCode=24` / `versionName=1.5.7`） |
-| Java 编译 | `javac 17.0.20` + `android-35.jar` + `api-82.jar` + `hidden-stub.jar` | 通过，**0 error** |
-| dex | `d8.jar`（build-tools 35，`--min-api 30`） | 通过 |
-| 打包/签名 | `uber-apk-signer 1.3.0` | v3 签名验证通过，0 errors |
-| 结构校验 | `tools/verify-apk.py` | **PASS**（dex 内 0 个 Xposed 类；`resources.arsc` stored + 4 字节对齐） |
-
-产物：`dist/EdgeGestureGuard-1.5.7-debug.apk`，
-MD5 `f0174e667709ec3bc06c389a7db05112`。
-
-## 16.1 一键构建 + 自动推送
-
-```bash
-sh tools/build-and-push.sh
+```
+ev == null ? return
+!ArmController.isArmed() ? return                 // 1 次 volatile 读
+action != DOWN && blockedCount == 0 ? return      // 1 次 volatile 读
+action != DOWN ? 查流状态（≤8 条）
+mask = HookRuntime.fgMask; mask == 0 ? return     // 1 次 volatile int 读，连坐标都不算
+算 rawY / 顶部区 / 底部区 -> 决定是否 block
 ```
 
-做四件事：编译 → 签名 → 复制到 `dist/EdgeGestureGuard-<版本>-debug.apk` → `git commit` →
-通过 `tools/push-via-api.py`（api.github.com 的 Git Data API）推进远端 main。
+配套改动：
 
-> 为什么不用 `git push`：本机只放行 `api.github.com`，`github.com:443` 直接超时。
-> 令牌放在 `~/.eg-git-cred`（600 权限，仓库之外），**用完记得轮换**。
+- 前台切换时把「当前应用要屏蔽哪些手势」预先算成 `int` 位掩码（`RuleSet.MASK_LEFT/RIGHT/BOTTOM/SHADE`），
+  规则更新或前台切换才重算；`RuleSet.Decision` 的对象分配被彻底删除。
+- 手势流跟踪从 `ConcurrentHashMap<Long,Long>` + 每次 `synchronized` 改成固定大小 `long[]` + `volatile int blockedCount`，
+  无自动装箱、无迭代器分配。
+- `Zones` 缓存屏幕宽高（竖屏 3200 / 横屏 1440 自动重算），只在 DOWN 里调用；不再对每条 MOVE 求尺寸。
+- `StatusBarHider.enforce()` 加 `hidden` 快路径，隐藏之后只读一个 boolean。
+- Shade 触摸 Hook 不再对「没拦住」的事件打日志，只在真的拦下时限流记一行。
 
-## 16.2 桌面进程日志
+### 保留的判据
 
-策略 B 跑在桌面进程，它的日志以前只存在于 logcat。1.5.6 起：
-桌面进程装好后会通过 `ContentResolver.update` 回报
-`{launcher_status: "hooks=N,…", launcher_diag: "<日志尾>"}`，
-App 导出诊断时会写出独立段落「## 策略 B（Launcher 进程回报）」。
-
-> 顺带修了离线构建脚本：`tools/build-local.sh` 之前没把 `app/libs/hidden-stub.jar` 放进 classpath
->（Gradle 里有、脚本里漏了），会导致本地构建 `TaskStackListener` 找不到符号。现已补上。
-
+- 唯一总闸仍是游戏模式 `ArmController.isArmed()`（进程内 volatile，各进程独立，所以 ARM/DISARM 要同时发给 SystemUI 与桌面）。
+- 底部上滑仍然只在桌面进程拦截（`LauncherBottomHooks`），SystemUI 侧不装任何底部 Hook。

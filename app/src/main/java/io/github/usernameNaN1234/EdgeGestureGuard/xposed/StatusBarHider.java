@@ -31,6 +31,8 @@ final class StatusBarHider {
             Collections.synchronizedList(new ArrayList<java.lang.ref.WeakReference<View>>());
     private static volatile boolean hooked;
     private static volatile boolean loggedHidden;
+    /** 已经处于隐藏状态：enforce() 的快路径，避免每次 DOWN 都去锁 + 遍历弱引用。 */
+    private static volatile boolean hidden;
 
     private StatusBarHider() {
     }
@@ -111,6 +113,9 @@ final class StatusBarHider {
 
     /** 游戏模式期间压住状态栏（幂等，可反复调用）。 */
     static void enforce() {
+        if (hidden) {
+            return;
+        }
         ModuleConfig cfg = HookRuntime.config;
         if (!ArmController.isArmed() || cfg == null || !cfg.hideStatusBar) {
             return;
@@ -135,6 +140,9 @@ final class StatusBarHider {
                         changed = true;
                     }
                 }
+            }
+            if (changed) {
+                hidden = true;
             }
             if (changed && !loggedHidden) {
                 loggedHidden = true;
@@ -165,6 +173,7 @@ final class StatusBarHider {
                 }
             }
             loggedHidden = false;
+            hidden = false;
         } catch (Throwable t) {
             Logx.w("statusbar restore failed", t);
         }

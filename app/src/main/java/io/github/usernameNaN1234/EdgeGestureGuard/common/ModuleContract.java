@@ -65,8 +65,6 @@ public final class ModuleContract {
     public static final String ACTION_STATUS_PUSH = MODULE_PACKAGE + ".action.STATUS_PUSH";
     /** App -> SystemUI：请求状态报告 */
     public static final String ACTION_STATUS_REQUEST = MODULE_PACKAGE + ".action.STATUS_REQUEST";
-    /** App -> SystemUI：前台应用变化（无障碍助手推送） */
-    public static final String ACTION_FOREGROUND_PUSH = MODULE_PACKAGE + ".action.FOREGROUND_PUSH";
 
     /**
      * App -> SystemUI：「游戏模式」会话总闸（启用/退出）。
@@ -104,8 +102,6 @@ public final class ModuleContract {
 
     public static final String EXTRA_RULES_JSON = "rules_json";
     public static final String EXTRA_STATUS_JSON = "status_json";
-    public static final String EXTRA_PACKAGE = "fg_package";
-    public static final String EXTRA_ACTIVITY = "fg_activity";
 
     /** App 侧 SharedPreferences */
     public static final String PREFS_RULES = "edgeguard_rules";

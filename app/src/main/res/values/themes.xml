@@ -1,6 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- 纯 framework 主题：不依赖 AndroidX / Material 组件库 -->
     <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">?android:attr/colorBackground</item>
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:colorAccent">@color/brand_primary</item>
+        <item name="android:colorControlHighlight">@color/ripple_dark</item>
+        <item name="android:statusBarColor">@color/brand_primary</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">true</item>
     </style>
 </resources>

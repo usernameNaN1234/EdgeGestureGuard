@@ -190,18 +190,19 @@ final class ShadeHooks {
         }
     }
 
-    /** 每次 ACTION_DOWN 记一行（限流 500ms）：用来判断"这一下到底有没有走到 Hook"。 */
-    private static void logTouch(String signature, MotionEvent event, boolean blocked) {
+    /** 拦下时记一行（限流 1s）；热路径的其它分支一律静默。 */
+    private static void logTouch(String signature, MotionEvent event) {
+        if (event == null) {
+            return;
+        }
         long now = SystemClock.uptimeMillis();
-        if (now - lastTouchLogAt < 500L) {
+        if (now - lastTouchLogAt < 1000L) {
             return;
         }
         lastTouchLogAt = now;
         try {
-            Xlog.step("SHADE-TOUCH " + signature
-                    + " rawY=" + (int) event.getRawY()
-                    + " y=" + (int) event.getY()
-                    + " blocked=" + blocked);
+            Xlog.step("SHADE-BLOCK " + signature
+                    + " rawY=" + (int) event.getRawY());
         } catch (Throwable ignored) {
         }
     }
@@ -239,10 +240,9 @@ final class ShadeHooks {
                     consume = HookLogic.shouldBlockCurrentDown()
                             && !ShadeStateProbe.isExpanded(param.thisObject);
                 }
-                // 只在两个场景打日志：验证模式，或"顶部区却没拦住"（这才是要查的）
-                if (event != null && event.getActionMasked() == MotionEvent.ACTION_DOWN
-                        && (HookRuntime.verifyMode() || !consume)) {
-                    logTouch(signature, event, consume);
+                // 热路径不写日志：只有真的拦下时才留一行（限流），其余全部静默。
+                if (consume) {
+                    logTouch(signature, event);
                 }
                 if (consume) {
                     InputSink.consumeReturn(param);

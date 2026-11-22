@@ -155,10 +155,6 @@ final class RulesPipe {
                     ArmController.arm("app");
                 } else if (ModuleContract.ACTION_DISARM.equals(action)) {
                     ArmController.disarm("app");
-                } else if (ModuleContract.ACTION_FOREGROUND_PUSH.equals(action)) {
-                    ForegroundTracker.onPushed(
-                            intent.getStringExtra(ModuleContract.EXTRA_PACKAGE),
-                            intent.getStringExtra(ModuleContract.EXTRA_ACTIVITY));
                 } else if (ModuleContract.ACTION_STATUS_REQUEST.equals(action)) {
                     sendStatus(context);
                 }
@@ -173,7 +169,6 @@ final class RulesPipe {
         filter.addAction(ModuleContract.ACTION_RULES_PUSH);
         filter.addAction(ModuleContract.ACTION_ARM);
         filter.addAction(ModuleContract.ACTION_DISARM);
-        filter.addAction(ModuleContract.ACTION_FOREGROUND_PUSH);
         filter.addAction(ModuleContract.ACTION_STATUS_REQUEST);
         if (Build.VERSION.SDK_INT >= 33) {
             context.registerReceiver(RECEIVER, filter, Context.RECEIVER_EXPORTED);

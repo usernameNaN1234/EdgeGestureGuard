@@ -35,13 +35,6 @@ public final class StatusReport {
     /** Launcher 进程（策略 B）的挂载情况；空 = 没加载到桌面进程（正常） */
     public String launcherState = "";
     public String zoneConfig = "";
-    public boolean verifyOnly;
-    /** 策略 A 是否真的吞事件（默认 false：只观测，避免吃掉音游底部判定区） */
-    public boolean bottomConsume;
-    /** 导航栏 Hook 挂载数 / 捕获到的导航栏视图数 */
-    public int navHooks;
-    public int navBars;
-    public String navDetail = "";
     /** 「游戏模式」会话是否开启（顶部下拉 + 底部上滑 的总闸） */
     public boolean armed;
     /** 谁打开的（tile / notification / app / …），用于 UI 显示与排障 */
@@ -52,7 +45,7 @@ public final class StatusReport {
     public String foregroundActivity = "";
     public int ruleCount;
     public long timestamp;
-    public String moduleVersion = "1.8.1";
+    public String moduleVersion = "1.9.0";
     public final List<String> notes = new ArrayList<>();
     /** Hook 进程的诊断日志尾部（随状态报告送来，App 直接落盘导出） */
     public final List<String> diag = new ArrayList<>();
@@ -70,11 +63,6 @@ public final class StatusReport {
             o.put("shadeTarget", safe(shadeTarget));
             o.put("launcherState", safe(launcherState));
             o.put("zoneConfig", safe(zoneConfig));
-            o.put("verifyOnly", verifyOnly);
-            o.put("bottomConsume", bottomConsume);
-            o.put("navHooks", navHooks);
-            o.put("navBars", navBars);
-            o.put("navDetail", navDetail == null ? "" : navDetail);
             o.put("armed", armed);
             o.put("armedSource", safe(armedSource));
             o.put("foregroundStrategy", foregroundStrategy == null ? "none" : foregroundStrategy);
@@ -117,11 +105,6 @@ public final class StatusReport {
             r.shadeTarget = o.optString("shadeTarget", "");
             r.launcherState = o.optString("launcherState", "");
             r.zoneConfig = o.optString("zoneConfig", "");
-            r.verifyOnly = o.optBoolean("verifyOnly", false);
-            r.bottomConsume = o.optBoolean("bottomConsume", false);
-            r.navHooks = o.optInt("navHooks", 0);
-            r.navBars = o.optInt("navBars", 0);
-            r.navDetail = o.optString("navDetail", "");
             r.armed = o.optBoolean("armed", false);
             r.armedSource = o.optString("armedSource", "");
             r.foregroundStrategy = o.optString("foregroundStrategy", "none");

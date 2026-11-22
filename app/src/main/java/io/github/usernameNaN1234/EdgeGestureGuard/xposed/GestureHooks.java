@@ -4,6 +4,7 @@ import android.view.InputEvent;
 import android.view.MotionEvent;
 
 import io.github.usernameNaN1234.EdgeGestureGuard.common.Logx;
+import io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleConfig;
 import io.github.usernameNaN1234.EdgeGestureGuard.common.StatusReport;
 
 import java.lang.reflect.Method;
@@ -52,7 +53,7 @@ final class GestureHooks {
 
     static void install(ClassLoader classLoader) {
         StatusReport status = HookRuntime.status;
-        status.moduleVersion = "1.8.1";
+        status.moduleVersion = "1.9.0";
 
         Class<?> edgeClass = null;
         try {
@@ -76,20 +77,6 @@ final class GestureHooks {
             backCallbackCount = BackInvocationGuard.install(edgeClass);
         } catch (Throwable t) {
             Xlog.step("BackInvocationGuard.install failed: " + t);
-        }
-
-        // 导航栏"临时滑出"抑制：实测在 LineageOS 24 上无法可靠做到
-        // （transient 显示由 system_server 的 DisplayPolicy 发起；1.6.2/1.6.4 的几种挂法
-        //   要么抓不到目标视图，要么误藏通知行）。因此默认**不安装**，避免误伤。
-        // 需要时把下面的开关改 true 自行试验（NavBarHooks 代码保留）。
-        int navCount = 0;
-        final boolean NAV_HOOK_ENABLED = false;
-        if (NAV_HOOK_ENABLED) {
-            try {
-                navCount = NavBarHooks.install(classLoader);
-            } catch (Throwable t) {
-                Logx.e("NavBarHooks.install failed", t);
-            }
         }
 
         // 顶部状态栏隐藏（游戏模式期间）：只针对 PhoneStatusBarView，可控可还原
@@ -120,7 +107,6 @@ final class GestureHooks {
         target.append("\n新架构 InputEventReceiver: ").append(modernCount).append(" 个入口");
         target.append("\n返回触发拦截 (onBackInvoked): ").append(backCallbackCount).append(" 个入口");
         target.append("\n通知栏下拉 (shade 触摸链): ").append(shadeCount).append(" 个入口");
-        target.append("\n导航栏滑出抑制 (transitionTo): ").append(navCount).append(" 个入口");
         if (MODERN_DETAIL.length() > 0) {
             target.append("\n候选: ").append(MODERN_DETAIL);
         }
@@ -130,7 +116,16 @@ final class GestureHooks {
                     + "日志行贴出来，可据此补充候选名。");
         }
 
-        installBottom(classLoader, status);
+        // 底部上滑：真正的执行方是 Launcher 进程（策略 B），SystemUI 侧不再安装任何底部 Hook。
+        // 实测结论：在 SystemUI 的返回手势通道上消费底部事件拦不住 Home，还会让游戏窗口
+        // 收不到底部 12% 的触摸 —— 对音游是纯亏，所以整条「策略 A」代码已删除。
+        ModuleConfig bottomCfg = HookRuntime.config;
+        boolean launcherOn = bottomCfg != null && bottomCfg.launcherBottom;
+        status.bottomState = launcherOn
+                ? StatusReport.BOTTOM_ATTACHED : StatusReport.BOTTOM_UNSUPPORTED;
+        status.bottomTarget = launcherOn
+                ? "底部上滑由桌面进程拦截（已开启，需 LSPosed 作用域含桌面）"
+                : "底部上滑由桌面进程执行：在 LSPosed 作用域勾选桌面并打开此开关后生效";
         // 无论后续 IPC 初始化是否成功，先把探测结果落到 Settings.Global（App 读它不需要权限）
         try {
             Diag.write(Ctx.any());
@@ -141,7 +136,7 @@ final class GestureHooks {
                 + ", legacy=" + legacyCount + ", modern=" + modernCount
                 + ", backCallback=" + backCallbackCount
                 + ", shade=" + status.shadeState + "(" + shadeCount + ")"
-                + ", navbar=" + navCount + ", statusbar=" + sbCount
+                + ", statusbar=" + sbCount
                 + ", bottom=" + status.bottomState
                 + ", zones[" + HookRuntime.config.describe() + "]");
         Logx.i("hook install finished: edge=" + status.edgeHooked
@@ -158,7 +153,7 @@ final class GestureHooks {
             return 0;
         }
         try {
-            int count = hookTouchEntries(handlerClass, ROLE_EDGE);
+            int count = hookTouchEntries(handlerClass);
             Logx.i("legacy edge hooks on " + handlerClass.getName() + ": " + count);
             return count;
         } catch (Throwable t) {
@@ -292,52 +287,25 @@ final class GestureHooks {
     }
 
     // ------------------------------------------------------------------
-    // 底部手势（探测不到就明确降级，不假装支持）
-    // ------------------------------------------------------------------
-
-    private static void installBottom(ClassLoader classLoader, StatusReport status) {
-        try {
-            Class<?> homeClass = Probe.findHomeHandle(classLoader);
-            if (homeClass == null) {
-                status.bottomState = StatusReport.BOTTOM_UNSUPPORTED;
-                status.bottomTarget = "未探测到 SystemUI 侧底部手势入口（HomeHandle 等）";
-                Logx.w("bottom gesture entry NOT found. AOSP 的底部上滑由 Launcher3/Quickstep "
-                        + "的 TouchInteractionService 通过 InputManager 手势通道接收，不在 SystemUI 进程；"
-                        + "本模块按约束只 Hook System UI，因此底部屏蔽在此环境不可用（降级为仅左右返回）。");
-                return;
-            }
-            int count = hookTouchEntries(homeClass, ROLE_BOTTOM);
-            status.bottomState = count > 0 ? StatusReport.BOTTOM_ATTACHED : StatusReport.BOTTOM_UNSUPPORTED;
-            status.bottomTarget = homeClass.getName() + "（" + count + " 个触摸入口）";
-            Logx.i("bottom hook: " + status.bottomState + " " + status.bottomTarget);
-        } catch (Throwable t) {
-            status.bottomState = StatusReport.BOTTOM_UNSUPPORTED;
-            status.bottomTarget = "安装失败: " + t.getClass().getSimpleName() + ": " + t.getMessage();
-            Logx.e("bottom hook install failed", t);
-        }
-    }
-
-    // ------------------------------------------------------------------
     // 通用：方法挂载 + 结果消费
     // ------------------------------------------------------------------
 
-    private static int hookTouchEntries(Class<?> cls, int role) {
+    private static int hookTouchEntries(Class<?> cls) {
         int count = 0;
         List<Method> methods = Reflect.touchEntryMethods(cls);
-        Logx.i((role == ROLE_EDGE ? "edge" : "bottom") + " candidates on "
-                + cls.getSimpleName() + ": " + methods.size());
+        Logx.i("edge candidates on " + cls.getSimpleName() + ": " + methods.size());
         for (Method m : methods) {
             String signature = Reflect.signature(m);
-            String key = role + "|" + signature;
+            String key = ROLE_EDGE + "|" + signature;
             if (HOOKED.contains(key)) {
                 continue;
             }
             try {
                 m.setAccessible(true);
-                XposedBridge.hookMethod(m, new TouchHook(role, signature));
+                XposedBridge.hookMethod(m, new TouchHook(signature));
                 HOOKED.add(key);
                 count++;
-                Logx.i("hooked [" + (role == ROLE_EDGE ? "EDGE" : "BOTTOM") + "] " + signature
+                Logx.i("hooked [EDGE] " + signature
                         + " returns " + m.getReturnType().getSimpleName());
             } catch (Throwable t) {
                 Logx.w("hook failed: " + signature, t);
@@ -351,11 +319,9 @@ final class GestureHooks {
      */
     private static final class TouchHook extends XC_MethodHook {
 
-        private final int role;
         private final String signature;
 
-        TouchHook(int role, String signature) {
-            this.role = role;
+        TouchHook(String signature) {
             this.signature = signature;
         }
 
@@ -366,9 +332,7 @@ final class GestureHooks {
                 if (event == null) {
                     return;
                 }
-                boolean consume = role == ROLE_EDGE
-                        ? HookLogic.onEdgeTouch(param.thisObject, event)
-                        : HookLogic.onBottomTouch(param.thisObject, event);
+                boolean consume = HookLogic.onEdgeTouch(param.thisObject, event);
                 if (consume) {
                     consumeEvent(param);
                 }

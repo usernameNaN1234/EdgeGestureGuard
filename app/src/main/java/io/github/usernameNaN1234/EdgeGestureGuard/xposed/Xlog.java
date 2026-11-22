@@ -5,14 +5,13 @@ import io.github.usernameNaN1234.EdgeGestureGuard.common.Logx;
 import de.robv.android.xposed.XposedBridge;
 
 /**
- * 日志分三档（省电的关键之一：热路径一律不写文件）。
+ * 日志分两档（省电的关键：热路径一律不写文件）。
  *
- *  step   —— 低频关键事件（安装 Hook、应用规则、错误），写 logcat + modules.log
- *  debug  —— 每事件级日志（边缘 DOWN、吞事件…），默认完全关闭，调试时才开
- *  marker —— 极少见的一次性标记，额外写 App 外部目录，方便用户不导日志也能看
+ *  step   —— 低频关键事件（安装 Hook、规则更新、拦截、错误）：logcat + 内存环形缓冲
+ *  debug  —— 每事件级日志，默认完全关闭，调试时才开
  *
- * 旧版 step() 会顺带 StatusFile.append()，而 step() 又被每个被吞掉的事件调用，
- * 等于每次滑动都在 /sdcard 上写文件 —— 这是最主要的耗电点，已去掉。
+ * 旧版 step() 还会写 /sdcard 上的轨迹文件，等于每次滑动都做一次文件 IO，已彻底删除；
+ * 现在所有日志都只进内存环形缓冲，随状态报告送到 App。
  */
 final class Xlog {
 
@@ -29,11 +28,6 @@ final class Xlog {
             return;
         }
         step(msg);
-    }
-
-    static void marker(String msg) {
-        step(msg);
-        StatusFile.append(msg);
     }
 
     private static void bridge(String msg) {

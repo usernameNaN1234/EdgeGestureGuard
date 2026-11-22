@@ -1,8 +1,6 @@
 package io.github.usernameNaN1234.EdgeGestureGuard.app;
 
 import android.app.Activity;
-import android.content.Context;
-import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.Handler;
@@ -11,6 +9,7 @@ import android.provider.Settings;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -35,39 +34,58 @@ import io.github.usernameNaN1234.EdgeGestureGuard.common.StatusReport;
 import java.util.List;
 
 /**
- * 控制器 UI（纯 framework 控件，不依赖 AndroidX，方便离线/CI 构建）。
+ * 控制器 UI（纯 framework 控件，不依赖 AndroidX / Material，方便离线 aapt2 + javac 构建）。
  *
- * 流程：
- *   打开 -> 下拉应用列表 -> 点一行展开 -> 勾选"左/右/底" -> 立即写 SharedPreferences
+ * 页面结构（见 res/layout/activity_main.xml）：
+ *   渐变头图 + 游戏模式卡片 + 状态卡片（可滚动） -> 搜索行 -> 应用列表 -> 底部操作栏。
+ *
+ * 数据流：
+ *   打开 -> 拉应用列表 -> 点行展开 -> 勾选左/右/顶/底 -> 立即写 SharedPreferences
  *        -> 广播给 SystemUI -> Hook 内存规则表整体替换 -> 下一次触摸立刻生效。
+ *
+ * 状态权威来源：SystemUI 回推的 {@link StatusReport}（尤其 armed），App 只做遥控与展示。
  */
 public final class MainActivity extends Activity implements StatusBus.Listener {
 
+    /** 4 秒没有任何状态回报 -> 展示可执行排查清单（区分"没注入"和"注入但广播不通"）。 */
+    private static final long STATUS_TIMEOUT_MS = 4000L;
+    private static final int RATIO_MIN_PERCENT = 2;
+    private static final int RATIO_MAX_PERCENT = 30;
+
+    // 头部
+    private TextView versionView;
+    private TextView gameStatePill;
+    private TextView gameModeDesc;
+    private TextView unlockHint;
+    private Button gameModeButton;
+
+    // 状态卡片
+    private TextView pillEdge;
+    private TextView pillShade;
+    private TextView pillBottom;
+    private TextView ruleCountView;
+    private TextView foregroundView;
+    private TextView statusToggle;
+    private TextView statusView;
+    private ScrollView statusScroll;
+
+    // 列表
     private EditText searchView;
     private CheckBox includeSystemView;
     private ListView listView;
-    private TextView statusView;
-    private TextView statusBrief;
-    private TextView statusToggle;
-    private ScrollView statusScroll;
     private TextView emptyView;
-    private Button gameModeButton;
-    /** 详情区是否展开（默认收起：状态日志不再把下面的应用列表顶出屏幕）。 */
-    private boolean detailExpanded;
 
     private AppListAdapter adapter;
     private RuleStore store;
     private boolean includeSystem;
-    /** 最近一次状态报告（音游预设要用它拿"当前前台应用"）。 */
+    /** 详情区是否展开（默认收起：状态日志不把下面的应用列表顶出屏幕）。 */
+    private boolean detailExpanded;
+    /** 最近一次状态报告（渲染详情 + 当前游戏模式判断都要用）。 */
     private StatusReport lastReport;
 
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private volatile boolean statusReceived;
 
-    /**
-     * 4 秒没收到 SystemUI 的任何状态回报 -> 直接告诉用户到底卡在哪一层。
-     * 光显示"正在请求"会让用户完全无法判断是没注入、广播不通、还是权限问题。
-     */
     private final Runnable statusTimeout = new Runnable() {
         @Override
         public void run() {
@@ -85,31 +103,50 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
             setContentView(R.layout.activity_main);
             store = new RuleStore(this);
 
+            versionView = findViewById(R.id.version);
+            gameStatePill = findViewById(R.id.game_state_pill);
+            gameModeDesc = findViewById(R.id.game_mode_desc);
+            unlockHint = findViewById(R.id.unlock_hint);
+            gameModeButton = findViewById(R.id.btn_game_mode);
+            pillEdge = findViewById(R.id.pill_edge);
+            pillShade = findViewById(R.id.pill_shade);
+            pillBottom = findViewById(R.id.pill_bottom);
+            ruleCountView = findViewById(R.id.rule_count);
+            foregroundView = findViewById(R.id.foreground);
+            statusToggle = findViewById(R.id.status_toggle);
+            statusView = findViewById(R.id.status_view);
+            statusScroll = findViewById(R.id.status_scroll);
             searchView = findViewById(R.id.search);
             includeSystemView = findViewById(R.id.include_system);
             listView = findViewById(R.id.app_list);
-            statusView = findViewById(R.id.status_view);
-            statusBrief = findViewById(R.id.status_brief);
-            statusToggle = findViewById(R.id.status_toggle);
-            statusScroll = findViewById(R.id.status_scroll);
             emptyView = findViewById(R.id.empty_view);
-            gameModeButton = findViewById(R.id.btn_game_mode);
+
+            versionView.setText(getString(R.string.app_version_fmt, versionName()));
 
             statusScroll.setVisibility(detailExpanded ? View.VISIBLE : View.GONE);
-            statusToggle.setText(detailExpanded
-                    ? R.string.status_hide_detail : R.string.status_show_detail);
+            updateDetailToggle();
             statusToggle.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     toggleStatusDetail();
                 }
             });
-            statusBrief.setOnClickListener(new View.OnClickListener() {
+
+            gameModeButton.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    toggleStatusDetail();
+                    applyGameMode(!currentArmed());
                 }
             });
+
+            Button tuningButton = findViewById(R.id.btn_tuning);
+            tuningButton.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    showTuningDialog();
+                }
+            });
+
             Button exportButton = findViewById(R.id.btn_export_diag);
             exportButton.setOnClickListener(new View.OnClickListener() {
                 @Override
@@ -117,12 +154,15 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
                     exportDiag();
                 }
             });
-            gameModeButton.setOnClickListener(new View.OnClickListener() {
+
+            Button syncButton = findViewById(R.id.btn_sync);
+            syncButton.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    applyGameMode(!currentArmed());
+                    resync();
                 }
             });
+
             ensureNotificationPermission();
 
             adapter = new AppListAdapter(this, store, new AppListAdapter.Listener() {
@@ -130,12 +170,16 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
                 public void onRulesChanged(String packageName, boolean blockLeft,
                                            boolean blockRight, boolean blockBottom,
                                            boolean blockTopShade) {
-                    RuleSet rules = store.load();
-                    ModuleBroadcasts.pushRules(MainActivity.this, rules);
-                    Logx.i("rule changed: " + packageName
-                            + " L=" + blockLeft + " R=" + blockRight
-                            + " B=" + blockBottom + " T=" + blockTopShade
-                            + " total=" + rules.size());
+                    try {
+                        RuleSet rules = store.load();
+                        ModuleBroadcasts.pushRules(MainActivity.this, rules);
+                        Logx.i("rule changed: " + packageName
+                                + " L=" + blockLeft + " R=" + blockRight
+                                + " B=" + blockBottom + " T=" + blockTopShade
+                                + " total=" + rules.size());
+                    } catch (Throwable t) {
+                        Logx.w("push rules after change failed", t);
+                    }
                 }
             });
             listView.setAdapter(adapter);
@@ -157,8 +201,12 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
 
                 @Override
                 public void afterTextChanged(Editable s) {
-                    adapter.setQuery(s == null ? "" : s.toString());
-                    updateEmptyView();
+                    try {
+                        adapter.setQuery(s == null ? "" : s.toString());
+                        updateEmptyView();
+                    } catch (Throwable t) {
+                        Logx.w("search filter failed", t);
+                    }
                 }
             });
 
@@ -170,38 +218,18 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
                 }
             });
 
-            Button syncButton = findViewById(R.id.btn_sync);
-            syncButton.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    ModuleBroadcasts.pushRules(MainActivity.this, store.load());
-                    ModuleBroadcasts.requestStatus(MainActivity.this);
-                    Toast.makeText(MainActivity.this, "已重新同步规则并请求状态", Toast.LENGTH_SHORT).show();
-                }
-            });
-
-            Button accessibilityButton = findViewById(R.id.btn_accessibility);
-            accessibilityButton.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    openAccessibilitySettings();
-                }
-            });
-
-            Button tuningButton = findViewById(R.id.btn_tuning);
-            tuningButton.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    showTuningDialog();
-                }
-            });
-
             includeSystem = includeSystemView.isChecked();
-            updateGameModeButton(currentArmed());
+            updateGameModeUi(currentArmed());
+            renderWaiting();
             loadApps();
+            StatusReport cached = StatusBus.last(this);
+            if (cached != null) {
+                renderStatus(cached);
+            }
         } catch (Throwable t) {
             Logx.e("MainActivity.onCreate failed", t);
-            Toast.makeText(this, "初始化失败，请查看 logcat（TAG=EdgeGestureGuard）", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "初始化失败，请查看 logcat（TAG=EdgeGestureGuard）",
+                    Toast.LENGTH_LONG).show();
         }
     }
 
@@ -211,16 +239,19 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         StatusBus.setListener(this);
         statusReceived = false;
         uiHandler.removeCallbacks(statusTimeout);
-        uiHandler.postDelayed(statusTimeout, 4000L);
+        uiHandler.postDelayed(statusTimeout, STATUS_TIMEOUT_MS);
         try {
+            updateGameModeUi(currentArmed());
             // SystemUI 可能刚重启，主动补推一次规则
             ModuleBroadcasts.pushRules(this, store.load());
             ModuleBroadcasts.requestStatus(this);
             // 通知/磁贴的显示跟随"最近一次已知状态"，随后会被 SystemUI 的回推纠正
-            io.github.usernameNaN1234.EdgeGestureGuard.app.ArmNotifier.refresh(this, currentArmed());
+            ArmNotifier.refresh(this, currentArmed());
             StatusReport last = StatusBus.last(this);
             if (last != null) {
                 renderStatus(last);
+            } else {
+                renderWaiting();
             }
         } catch (Throwable t) {
             Logx.w("onResume sync failed", t);
@@ -236,10 +267,18 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
 
     @Override
     public void onStatus(StatusReport report) {
-        statusReceived = true;
-        uiHandler.removeCallbacks(statusTimeout);
-        renderStatus(report);
+        try {
+            statusReceived = true;
+            uiHandler.removeCallbacks(statusTimeout);
+            renderStatus(report);
+        } catch (Throwable t) {
+            Logx.w("onStatus failed", t);
+        }
     }
+
+    // ------------------------------------------------------------------
+    // 应用列表
+    // ------------------------------------------------------------------
 
     private void loadApps() {
         try {
@@ -247,8 +286,12 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
             new AppListLoader(this).loadAsync(includeSystem, new AppListLoader.Callback() {
                 @Override
                 public void onLoaded(List<AppEntry> apps) {
-                    adapter.setData(apps);
-                    updateEmptyView();
+                    try {
+                        adapter.setData(apps);
+                        updateEmptyView();
+                    } catch (Throwable t) {
+                        Logx.w("apply app list failed", t);
+                    }
                 }
             });
         } catch (Throwable t) {
@@ -263,140 +306,104 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         }
     }
 
+    // ------------------------------------------------------------------
+    // 状态渲染
+    // ------------------------------------------------------------------
+
+    /** 还没有任何状态回报时的占位（不是"已关闭/未挂载"，避免误导）。 */
+    private void renderWaiting() {
+        try {
+            bindPillIdle(pillEdge, R.string.status_pill_edge_label, R.string.pill_state_wait);
+            bindPillIdle(pillShade, R.string.status_pill_shade_label, R.string.pill_state_wait);
+            bindPillIdle(pillBottom, R.string.status_pill_bottom_label, R.string.pill_state_wait);
+            ruleCountView.setText(R.string.rule_count_unknown);
+            foregroundView.setText(R.string.foreground_waiting);
+            statusView.setText(R.string.status_loading);
+            updateDetailToggle();
+        } catch (Throwable t) {
+            Logx.w("renderWaiting failed", t);
+        }
+    }
+
     private void renderStatus(StatusReport report) {
         if (report == null) {
             return;
         }
         try {
             lastReport = report;
-            adapter.setSupport(report.bottomZoneObserved(), report.shadeUsable());
-            StringBuilder sb = new StringBuilder();
-            sb.append(getString(R.string.status_title)).append('\n');
-            if (report.edgeHooked) {
-                sb.append("· 左右返回 Hook：已挂载\n    ").append(report.edgeTarget);
-            } else {
-                sb.append("· 左右返回 Hook：未挂载\n    ").append(report.edgeTarget);
-            }
-            sb.append('\n');
-            // 功能二：通知栏下拉（SystemUI 进程内实现）
-            if (report.shadeUsable()) {
-                sb.append("· 通知栏下拉 Hook：已挂载\n    ").append(report.shadeTarget);
-            } else {
-                sb.append("· 通知栏下拉 Hook：未挂载（当前 ROM 上此项不生效）\n    ")
-                        .append(report.shadeTarget);
-            }
-            sb.append('\n');
-            // 功能一：底部上滑 —— 只报实测结论，不报"希望"
-            sb.append("· 游戏模式（总闸）：").append(report.armed
-                    ? "已开启 → 按各应用规则屏蔽"
-                    : "已关闭 → 所有规则都不生效（手势路径零开销）");
-            sb.append("\n    底部上滑：");
-            if (report.bottomConsume) {
-                sb.append("策略 A 已开启「吞事件」（实验性）");
-            } else {
-                sb.append("策略 A 仅观测（默认；吞事件拦不住 Home，还会吃掉音游底部判定区）");
-            }
-            sb.append("\n    观测计数：").append(
-                    report.bottomMeasure == null || report.bottomMeasure.length() == 0
-                            ? "无" : report.bottomMeasure);
-            String launcherStatus = readLauncherStatus();
-            if (launcherStatus == null) {
-                sb.append("\n    策略 B：**未注入**桌面进程（LSPosed 作用域还没勾 com.android.launcher3，或没重启）");
-                sb.append("\n    → 底部阈值现在没有任何效果；必须加作用域 + 重启，策略 B 才会跑");
-            } else {
-                sb.append("\n    策略 B：已注入（").append(launcherStatus).append("）");
-                sb.append("\n    游戏模式开启时自动生效；底部阈值从这一刻起才真正参与判定");
-            }
-            sb.append("\n    实测计数：").append(
-                    report.bottomMeasure == null || report.bottomMeasure.length() == 0
-                            ? "无" : report.bottomMeasure);
-            sb.append("\n    HomeHandle 入口：").append(report.bottomUsable() ? "已挂载" : "未挂载");
-            if (report.bottomTarget != null && report.bottomTarget.length() > 0) {
-                sb.append("（").append(report.bottomTarget).append("）");
-            }
-            if (report.launcherState != null && report.launcherState.length() > 0) {
-                sb.append("\n    ").append(report.launcherState);
-            }
-            if (report.zoneConfig != null && report.zoneConfig.length() > 0) {
-                sb.append('\n').append("· 边缘区：").append(report.zoneConfig);
-                if (report.verifyOnly) {
-                    sb.append("  ⚠ 验证模式：只记日志、不拦截");
-                }
-            }
-            sb.append('\n').append("· 前台应用来源：").append(strategyName(report.foregroundStrategy));
-            if (report.foregroundPackage != null && report.foregroundPackage.length() > 0) {
-                sb.append("\n    最近前台：").append(report.foregroundPackage);
-                if (report.foregroundActivity != null && report.foregroundActivity.length() > 0) {
-                    sb.append('/').append(report.foregroundActivity);
-                }
-            }
-            if (report.foregroundError != null && report.foregroundError.length() > 0) {
-                sb.append("\n    提示：").append(report.foregroundError);
-            }
-            sb.append('\n').append("· Hook 内规则条数：").append(report.ruleCount);
-            if (report.edgeMetrics != null && report.edgeMetrics.length() > 0) {
-                sb.append('\n').append("· 边缘几何：").append(report.edgeMetrics);
-            }
+            // 游戏模式状态以 SystemUI 回推的 report.armed 为准
+            updateGameModeUi(report.armed);
 
-            // 可执行的告警（不用猜，照着做即可）
-            if (!report.edgeHooked) {
-                sb.append("\n\n⚠ 未挂载任何手势入口：请确认 LSPosed 已启用本模块、作用域只勾 SystemUI、"
-                        + "并且重启过 SystemUI/手机。");
-            }
-            if (report.ruleCount == 0) {
-                sb.append("\n⚠ Hook 内规则条数为 0：规则没送到 SystemUI（点下方「重新同步到 SystemUI」；"
-                        + "若仍为 0，可能模块被冻结或 SystemUI 未重启）。");
-            }
-            if (!report.shadeUsable()) {
-                sb.append("\n⚠ 通知栏下拉 Hook 未挂载：logcat 里的 'shade candidates' 行会列出"
-                        + "每个候选类的探测结果，把该行贴出来即可补候选名。");
-            }
-            if ("none".equals(report.foregroundStrategy) || report.foregroundStrategy == null) {
-                sb.append("\n⚠ 前台应用识别失败，此时按设计「不屏蔽」。请点「前台检测助手」启用无障碍助手。");
-            }
-            // 诊断导出位置（用户/AI 直接去读，不用复制 logcat）
-            String diagPath = DiagExporter.lastPath();
-            if (diagPath != null && diagPath.length() > 0) {
-                sb.append("\n· 诊断已导出：").append(diagPath);
-            } else {
-                sb.append("\n· 诊断导出目录：").append(DiagExporter.dirHint(this))
-                        .append("/").append(DiagExporter.latestName());
-            }
-            appendSelfCheck(sb);
-            statusView.setText(sb.toString());
-            renderBrief(report);
-            updateGameModeButton(report.armed);
+            bindPill(pillEdge, R.string.status_pill_edge_label, report.edgeHooked);
+            bindPill(pillShade, R.string.status_pill_shade_label, report.shadeUsable());
+            bindPill(pillBottom, R.string.status_pill_bottom_label, bottomHooked(report));
+
+            ruleCountView.setText(getString(R.string.rule_count_fmt, report.ruleCount));
+            String pkg = nz(report.foregroundPackage).trim();
+            foregroundView.setText(pkg.length() == 0
+                    ? getString(R.string.foreground_unknown)
+                    : getString(R.string.foreground_fmt, pkg));
+
+            statusView.setText(buildDetail(report));
+            updateDetailToggle();
         } catch (Throwable t) {
             Logx.w("renderStatus failed", t);
         }
     }
 
-    // ------------------------------------------------------------------
-    // 状态摘要（默认收起详情，避免日志把列表顶出屏幕）
-    // ------------------------------------------------------------------
+    /** 底部上滑是否真的可用：attached 或 Hook 端自报 usable。 */
+    private boolean bottomHooked(StatusReport report) {
+        return report != null
+                && ("attached".equals(report.bottomState) || report.bottomUsable());
+    }
 
-    private void renderBrief(StatusReport report) {
+    private void bindPill(TextView pill, int labelRes, boolean mounted) {
         try {
-            StringBuilder b = new StringBuilder();
-            b.append("左右:").append(report.edgeHooked ? "✅" : "❌")
-                    .append("  顶部:").append(report.shadeUsable() ? "✅" : "❌")
-                    .append("  底部:").append(report.bottomZoneObserved() ? "✅" : "⚠")
-                    .append("   规则:").append(report.ruleCount);
-            b.append('\n').append("游戏模式:").append(report.armed ? "已开启" : "已关闭");
-            if (report.armed) {
-                b.append("（锁屏解锁自动退出）");
-            }
-            String pkg = report.foregroundPackage;
-            if (pkg != null && pkg.length() > 0) {
-                b.append("  ·  前台:").append(pkg);
-            }
-            int warnings = warningCount(report);
-            if (warnings > 0) {
-                b.append('\n').append("⚠ ").append(warnings).append(" 条提示 — 点「详情」查看");
-            }
-            statusBrief.setText(b.toString());
+            pill.setText(getString(labelRes) + "\n"
+                    + getString(mounted ? R.string.pill_state_on : R.string.pill_state_off));
+            pill.setBackgroundResource(mounted
+                    ? R.drawable.bg_capsule_ok : R.drawable.bg_capsule_warn);
+            pill.setTextColor(getColor(mounted
+                    ? R.color.pill_ok_fg : R.color.pill_warn_fg));
         } catch (Throwable t) {
-            Logx.w("renderBrief failed", t);
+            Logx.w("bindPill failed", t);
+        }
+    }
+
+    private void bindPillIdle(TextView pill, int labelRes, int stateRes) {
+        try {
+            pill.setText(getString(labelRes) + "\n" + getString(stateRes));
+            pill.setBackgroundResource(R.drawable.bg_capsule_idle);
+            pill.setTextColor(getColor(R.color.pill_idle_fg));
+        } catch (Throwable t) {
+            Logx.w("bindPillIdle failed", t);
+        }
+    }
+
+    private void updateDetailToggle() {
+        try {
+            if (detailExpanded) {
+                statusToggle.setText(R.string.status_hide_detail);
+                return;
+            }
+            int warnings = lastReport == null ? 0 : warningCount(lastReport);
+            if (warnings > 0) {
+                statusToggle.setText(getString(R.string.status_show_detail_warn, warnings));
+            } else {
+                statusToggle.setText(R.string.status_show_detail);
+            }
+        } catch (Throwable t) {
+            Logx.w("updateDetailToggle failed", t);
+        }
+    }
+
+    private void toggleStatusDetail() {
+        try {
+            detailExpanded = !detailExpanded;
+            statusScroll.setVisibility(detailExpanded ? View.VISIBLE : View.GONE);
+            updateDetailToggle();
+        } catch (Throwable t) {
+            Logx.w("toggleStatusDetail failed", t);
         }
     }
 
@@ -408,47 +415,133 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         if (!report.shadeUsable()) {
             n++;
         }
-        if (!report.bottomZoneObserved()) {
+        if (!bottomHooked(report)) {
             n++;
         }
         if (report.ruleCount == 0) {
             n++;
         }
-        if (report.foregroundStrategy == null || "none".equals(report.foregroundStrategy)) {
+        String strategy = report.foregroundStrategy;
+        if (strategy == null || "none".equals(strategy) || nz(report.foregroundPackage).length() == 0) {
             n++;
         }
         return n;
     }
 
-    /**
-     * 手动导出诊断（切回 App 时也会自动导出一次：onResume 会请求状态，
-     * SystemUI 回推的 StatusReport 里带着 Hook 日志尾部）。
-     */
-    private void exportDiag() {
-        try {
-            DiagExporter.exportAsync(this, lastReport, "manual");
-            String path = DiagExporter.dirHint(this) + "/" + DiagExporter.latestName();
-            Toast.makeText(this, getString(R.string.diag_exported, path),
-                    Toast.LENGTH_LONG).show();
-            Logx.i("manual diag export -> " + path);
-        } catch (Throwable t) {
-            Logx.w("exportDiag failed", t);
+    /** 详情正文：完整挂载目标 + 关键配置 + 自检（默认收起在 status_scroll 里）。 */
+    private String buildDetail(StatusReport report) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("· 左右返回：").append(report.edgeHooked ? "已挂载" : "未挂载");
+        appendTarget(sb, report.edgeTarget);
+
+        sb.append("\n· 顶部下拉：").append(report.shadeUsable()
+                ? "已挂载" : "未挂载（当前 ROM 上此项不生效）");
+        appendTarget(sb, report.shadeTarget);
+
+        boolean bottom = bottomHooked(report);
+        sb.append("\n· 底部上滑：").append(bottom ? "已挂载" : "未挂载");
+        if (nz(report.bottomState).length() > 0) {
+            sb.append("（").append(report.bottomState).append("）");
+        }
+        appendTarget(sb, report.bottomTarget);
+
+        if (nz(report.zoneConfig).length() > 0) {
+            sb.append("\n· 边缘区：").append(report.zoneConfig);
+        }
+        String launcher = nz(report.launcherState).length() > 0
+                ? report.launcherState : readLauncherStatus();
+        if (nz(launcher).length() > 0) {
+            sb.append("\n· Launcher：").append(launcher);
+        }
+        sb.append("\n· 前台识别：").append(strategyName(report.foregroundStrategy));
+        String pkg = nz(report.foregroundPackage).trim();
+        if (pkg.length() > 0) {
+            sb.append("（").append(pkg).append("）");
+        }
+        if (nz(report.foregroundError).length() > 0) {
+            sb.append("\n  ⚠ ").append(report.foregroundError);
+        }
+        sb.append("\n· Hook 内规则条数：").append(report.ruleCount);
+
+        // 可执行的告警（照着做即可，不用猜）
+        if (!report.edgeHooked) {
+            sb.append("\n⚠ 未挂载任何手势入口：确认 LSPosed 已启用本模块、作用域只勾 SystemUI，"
+                    + "并重启过 SystemUI/手机。");
+        }
+        if (report.ruleCount == 0) {
+            sb.append("\n⚠ Hook 内规则条数为 0：点底部「重新同步」；仍为 0 时检查模块是否被冻结、"
+                    + "SystemUI 是否重启过。");
+        }
+        if (!report.shadeUsable()) {
+            sb.append("\n⚠ 顶部下拉 Hook 未挂载：把 logcat 里的 'shade candidates' 行"
+                    + "贴给开发者补候选类名。");
+        }
+        appendDiagPath(sb);
+        appendSelfCheck(sb);
+        return sb.toString();
+    }
+
+    private void appendTarget(StringBuilder sb, String target) {
+        if (nz(target).length() > 0) {
+            sb.append("\n    ").append(target);
         }
     }
 
-    private void toggleStatusDetail() {
+    private void appendDiagPath(StringBuilder sb) {
         try {
-            detailExpanded = !detailExpanded;
-            statusScroll.setVisibility(detailExpanded ? View.VISIBLE : View.GONE);
-            statusToggle.setText(detailExpanded
-                    ? R.string.status_hide_detail : R.string.status_show_detail);
+            String path = DiagExporter.lastPath();
+            sb.append("\n· 诊断导出：").append(nz(path).length() > 0
+                    ? path
+                    : DiagExporter.dirHint(this) + "/" + DiagExporter.latestName());
         } catch (Throwable t) {
-            Logx.w("toggleStatusDetail failed", t);
+            Logx.w("appendDiagPath failed", t);
+        }
+    }
+
+    /** 4 秒无回报时渲染的诊断页（不猜，给出可执行清单）。 */
+    private void renderNoResponse() {
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append(getString(R.string.status_no_response_title)).append('\n');
+            String diag = readDiag();
+            String loaded = readGlobal(ModuleContract.LOADED_GLOBAL_KEY);
+            if (diag == null && loaded == null) {
+                sb.append("\n判定：模块没有在 SystemUI 里运行起来（自检记录为空）。\n");
+                sb.append("\n请依次检查：\n");
+                sb.append("1) LSPosed 里本模块的总开关是否已打开；\n");
+                sb.append("2) 作用域是否勾选了 System UI；\n");
+                sb.append("3) 勾选后是否重启过手机 / SystemUI；\n");
+                sb.append("4) Android 17 需要支持该版本的 LSPosed 分支。\n");
+            } else if (diag == null) {
+                sb.append("\n判定：模块已加载进 SystemUI（注入标记：").append(loaded)
+                        .append("），但 Hook 初始化没跑完。\n");
+                sb.append("请到 LSPosed → 日志 里搜索本模块的报错行。\n");
+            } else {
+                sb.append("\n判定：模块已注入 SystemUI（自检记录存在），问题出在广播通道。\n");
+                sb.append("记录：").append(diag).append('\n');
+                sb.append("请点底部「重新同步」；仍不同步时 Hook 会改用 ContentProvider 轮询"
+                        + "（约 15 秒一次）。\n");
+            }
+            appendDiagPath(sb);
+            appendSelfCheck(sb);
+            statusView.setText(sb.toString());
+
+            // 自动展开详情，让排查清单直接可见
+            detailExpanded = true;
+            statusScroll.setVisibility(View.VISIBLE);
+            bindPillIdle(pillEdge, R.string.status_pill_edge_label, R.string.pill_state_none);
+            bindPillIdle(pillShade, R.string.status_pill_shade_label, R.string.pill_state_none);
+            bindPillIdle(pillBottom, R.string.status_pill_bottom_label, R.string.pill_state_none);
+            ruleCountView.setText(R.string.rule_count_unknown);
+            foregroundView.setText(R.string.status_no_response_short);
+            updateDetailToggle();
+        } catch (Throwable t) {
+            Logx.w("renderNoResponse failed", t);
         }
     }
 
     // ------------------------------------------------------------------
-    // 游戏模式（会话总闸）：通知 / 磁贴 / 本按钮 三个入口等价
+    // 游戏模式（总闸）：通知 / 磁贴 / 本按钮 三个入口等价
     // ------------------------------------------------------------------
 
     private boolean currentArmed() {
@@ -462,7 +555,7 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
     private void applyGameMode(boolean armed) {
         try {
             ArmClient.setArmed(this, armed, "app");
-            updateGameModeButton(armed);
+            updateGameModeUi(armed);
             Toast.makeText(this, armed
                             ? R.string.game_mode_on_toast
                             : R.string.game_mode_off_toast,
@@ -472,12 +565,21 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         }
     }
 
-    private void updateGameModeButton(boolean armed) {
+    private void updateGameModeUi(boolean armed) {
         try {
             gameModeButton.setText(armed
                     ? R.string.btn_game_mode_on : R.string.btn_game_mode_off);
+            gameStatePill.setText(armed
+                    ? R.string.game_state_on : R.string.game_state_off);
+            gameStatePill.setBackgroundResource(armed
+                    ? R.drawable.bg_capsule_ok : R.drawable.bg_capsule_idle);
+            gameStatePill.setTextColor(getColor(armed
+                    ? R.color.pill_ok_fg : R.color.pill_idle_fg));
+            gameModeDesc.setText(armed
+                    ? R.string.game_mode_desc_on : R.string.game_mode_desc_off);
+            unlockHint.setVisibility(armed ? View.VISIBLE : View.GONE);
         } catch (Throwable t) {
-            Logx.w("updateGameModeButton failed", t);
+            Logx.w("updateGameModeUi failed", t);
         }
     }
 
@@ -496,6 +598,39 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         }
     }
 
+    // ------------------------------------------------------------------
+    // 底部操作：导出诊断 / 重新同步
+    // ------------------------------------------------------------------
+
+    private void exportDiag() {
+        try {
+            DiagExporter.exportAsync(this, lastReport, "manual");
+            String path = DiagExporter.dirHint(this) + "/" + DiagExporter.latestName();
+            Toast.makeText(this, getString(R.string.diag_exported, path),
+                    Toast.LENGTH_LONG).show();
+            Logx.i("manual diag export -> " + path);
+        } catch (Throwable t) {
+            Logx.w("exportDiag failed", t);
+        }
+    }
+
+    private void resync() {
+        try {
+            ModuleBroadcasts.pushRules(this, store.load());
+            ModuleBroadcasts.requestStatus(this);
+            Toast.makeText(this, R.string.sync_toast, Toast.LENGTH_SHORT).show();
+            statusReceived = false;
+            uiHandler.removeCallbacks(statusTimeout);
+            uiHandler.postDelayed(statusTimeout, STATUS_TIMEOUT_MS);
+        } catch (Throwable t) {
+            Logx.w("resync failed", t);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 自检（Settings.Global 读取不需要权限）
+    // ------------------------------------------------------------------
+
     private String strategyName(String strategy) {
         if (strategy == null || strategy.length() == 0 || "none".equals(strategy)) {
             return "未知（安全默认：不屏蔽）";
@@ -503,16 +638,12 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         if (strategy.startsWith("atm") || strategy.startsWith("am:")) {
             return "ActivityTaskManager 反射查询";
         }
-        if (strategy.startsWith("accessibility")) {
-            return "无障碍助手推送";
-        }
         if (strategy.startsWith("usage")) {
             return "UsageStatsManager 兜底";
         }
         return strategy;
     }
 
-    /** SystemUI 侧自检记录（Settings.Global，由 Hook 端写入；App 读取不需要任何权限）。 */
     private String readDiag() {
         try {
             String v = Settings.Global.getString(getContentResolver(), ModuleContract.DIAG_GLOBAL_KEY);
@@ -536,12 +667,17 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         return false;
     }
 
-    private String moduleVersion() {
+    private String versionName() {
         try {
             return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
         } catch (Throwable t) {
             return "?";
         }
+    }
+
+    /** 兼容旧调用点（自检里用同一个来源）。 */
+    private String moduleVersion() {
+        return versionName();
     }
 
     private String readGlobal(String key) {
@@ -583,9 +719,8 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
     /** Launcher 进程回报的策略 B 注入状态（由 RulesProvider.update 落盘）。 */
     private String readLauncherStatus() {
         try {
-            String v = getSharedPreferences(
-                    io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleContract.PREFS_RULES, MODE_PRIVATE)
-                    .getString(io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleContract.PREF_LAUNCHER_STATUS, null);
+            String v = getSharedPreferences(ModuleContract.PREFS_RULES, MODE_PRIVATE)
+                    .getString(ModuleContract.PREF_LAUNCHER_STATUS, null);
             return (v == null || v.length() == 0) ? null : v;
         } catch (Throwable t) {
             return null;
@@ -609,14 +744,18 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         return sb.toString();
     }
 
+    /**
+     * 自检：必须保留两部分 —— ① 是否注入；② 版本是否一致
+     * （SystemUI 里跑的是"进程启动时加载的那份代码"，装新 APK 不会替换它）。
+     */
     private void appendSelfCheck(StringBuilder sb) {
         String diag = readDiag();
         String loaded = readGlobal(ModuleContract.LOADED_GLOBAL_KEY);
         sb.append("\n\n—— 自检 ——");
         sb.append("\n· 模块版本：").append(moduleVersion());
+        sb.append("\n· LSPosed Manager：").append(hasLsposed() ? "已安装" : "未检测到");
 
-        // 判定以「自检记录」为准：它由 Hook 端在拿到真实 App Context 后写入，
-        // 而 early marker 在 handleLoadPackage 阶段常因包名/uid 校验写不进去，不能当判据。
+        // 判定以「自检记录」为准：它由 Hook 端在拿到真实 App Context 后写入
         if (diag != null) {
             sb.append("\n· 判定：模块已注入并在 SystemUI 中运行");
         } else if (loaded != null) {
@@ -626,8 +765,7 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         }
         sb.append("\n· SystemUI 自检记录：").append(diag == null ? "无" : diag);
 
-        // 版本一致性检查：SystemUI 里跑的是"进程启动时加载的"那份代码，
-        // 装新 APK 不会替换它 —— 这是最容易误判成"新功能没生效"的原因。
+        // 版本一致性检查
         String runningVersion = extractVersion(diag);
         String installedVersion = moduleVersion();
         if (runningVersion != null && installedVersion != null
@@ -635,6 +773,8 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
             sb.append("\n· ⚠ SystemUI 里仍在运行 v").append(runningVersion)
                     .append("，App 是 v").append(installedVersion)
                     .append("\n  → 新版本还没生效：请重启手机（或 root 下 killall com.android.systemui）");
+        } else if (runningVersion != null) {
+            sb.append("\n· 版本一致性：一致（v").append(runningVersion).append("）");
         }
         sb.append("\n· 注入标记：").append(loaded == null
                 ? "未写入（早期写入受限，可忽略）" : loaded);
@@ -671,52 +811,14 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         }
     }
 
-    /** 4 秒无回报时渲染的诊断页（不猜，给出可执行清单）。 */
-    private void renderNoResponse() {
-        try {
-            StringBuilder sb = new StringBuilder();
-            sb.append("SystemUI 未响应（4 秒内没有任何状态回报）\n");
-            String diag = readDiag();
-            String loaded = readGlobal(ModuleContract.LOADED_GLOBAL_KEY);
-            if (diag == null && loaded == null) {
-                sb.append("\n判定：模块没有在 SystemUI 里运行起来（自检记录为空）。\n");
-                sb.append("\n请依次检查：\n");
-                sb.append("1) LSPosed 是否真的装了：下方「LSPosed Manager」一行；\n");
-                sb.append("2) LSPosed → 模块 → 打开「边缘手势守卫」总开关；\n");
-                sb.append("3) 点进本模块 → 作用域 → 勾选 System UI；\n");
-                sb.append("4) 勾完必须重启手机（或重启 SystemUI）；\n");
-                sb.append("5) Android 17 需要支持该版本的 LSPosed 分支。\n");
-            } else if (diag == null) {
-                sb.append("\n判定：模块**已加载**进 SystemUI（注入标记：").append(loaded).append("），\n");
-                sb.append("但 Hook 初始化没跑完（没有自检记录）。\n");
-                sb.append("\n请在 LSPosed → 日志 里找 io.github.usernameNaN1234.EdgeGestureGuard 的报错行。\n");
-            } else {
-                sb.append("\n判定：模块已注入 SystemUI（自检记录存在），问题在广播通道。\n");
-                sb.append("记录：").append(diag).append("\n");
-                sb.append("\n请点下方「重新同步到 SystemUI」；仍不同步时本模块会自动改用\n");
-                sb.append("ContentProvider 轮询拉取规则（约 15 秒一次）。\n");
-            }
-            appendSelfCheck(sb);
-            statusView.setText(sb.toString());
-        } catch (Throwable t) {
-            Logx.w("renderNoResponse failed", t);
-        }
-    }
-
     // ------------------------------------------------------------------
-    // 阈值 / 验证模式（顶部与底部只由游戏模式控制）
+    // 调参对话框：顶部/底部比例 + 锁屏保持 + 隐藏状态栏 + Launcher 底部 Hook
     // ------------------------------------------------------------------
 
-    /**
-     * 阈值 + 验证模式 + 策略 B 开关（全部是模块级配置，随规则表下发）。
-     *
-     * 为什么阈值要在这里暴露：不同机型的导航条/状态栏高度不同，
-     * 12% 只是保守默认值；音游玩家可以据此把屏蔽区调窄到刚好覆盖系统手势区。
-     */
     private void showTuningDialog() {
         try {
             final RuleSet current = store.load();
-            ModuleConfig cfg = current.config();
+            ModuleConfig config = current.config();
 
             LinearLayout root = new LinearLayout(this);
             root.setOrientation(LinearLayout.VERTICAL);
@@ -726,31 +828,36 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
             final TextView hint = new TextView(this);
             hint.setText(R.string.tuning_hint);
             hint.setTextSize(12f);
-            root.addView(hint);
+            hint.setPadding(0, 0, 0, dp(8));
+            root.addView(hint, matchWrap());
 
             final TextView topLabel = new TextView(this);
-            final SeekBar topBar = new SeekBar(this);
-            topBar.setMax(28);   // 2% ~ 30%
-            topBar.setProgress(Math.round(cfg.topZoneRatio * 100f) - 2);
-            topLabel.setText(zoneLabel(R.string.tuning_top, Math.round(cfg.topZoneRatio * 100f)));
-            root.addView(topLabel);
-            root.addView(topBar);
+            final SeekBar topBar = createRatioBar(config.topZoneRatio);
+            topLabel.setText(zoneLabel(R.string.tuning_top,
+                    Math.round(config.topZoneRatio * 100f)));
+            root.addView(topLabel, matchWrap());
+            root.addView(topBar, matchWrap());
 
             final TextView bottomLabel = new TextView(this);
-            final SeekBar bottomBar = new SeekBar(this);
-            bottomBar.setMax(28);
-            bottomBar.setProgress(Math.round(cfg.bottomZoneRatio * 100f) - 2);
-            bottomLabel.setText(zoneLabel(R.string.tuning_bottom, Math.round(cfg.bottomZoneRatio * 100f)));
-            root.addView(bottomLabel);
-            root.addView(bottomBar);
+            final SeekBar bottomBar = createRatioBar(config.bottomZoneRatio);
+            bottomLabel.setText(zoneLabel(R.string.tuning_bottom,
+                    Math.round(config.bottomZoneRatio * 100f)));
+            root.addView(bottomLabel, matchWrap());
+            root.addView(bottomBar, matchWrap());
 
             SeekBar.OnSeekBarChangeListener listener = new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                    if (seekBar == topBar) {
-                        topLabel.setText(zoneLabel(R.string.tuning_top, progress + 2));
-                    } else {
-                        bottomLabel.setText(zoneLabel(R.string.tuning_bottom, progress + 2));
+                    try {
+                        if (seekBar == topBar) {
+                            topLabel.setText(zoneLabel(R.string.tuning_top,
+                                    progress + RATIO_MIN_PERCENT));
+                        } else {
+                            bottomLabel.setText(zoneLabel(R.string.tuning_bottom,
+                                    progress + RATIO_MIN_PERCENT));
+                        }
+                    } catch (Throwable t) {
+                        Logx.w("tuning seekbar failed", t);
                     }
                 }
 
@@ -765,29 +872,17 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
             topBar.setOnSeekBarChangeListener(listener);
             bottomBar.setOnSeekBarChangeListener(listener);
 
-            final CheckBox verify = new CheckBox(this);
-            verify.setText(R.string.tuning_verify);
-            verify.setTextSize(13f);
-            verify.setChecked(cfg.verifyOnly);
-            root.addView(verify);
+            final CheckBox keepUnlock = createCheckBox(R.string.tuning_keep_unlock,
+                    config.keepOnUnlock);
+            root.addView(keepUnlock, matchWrap());
 
-            final CheckBox keepUnlock = new CheckBox(this);
-            keepUnlock.setText(R.string.tuning_keep_unlock);
-            keepUnlock.setTextSize(13f);
-            keepUnlock.setChecked(cfg.keepOnUnlock);
-            root.addView(keepUnlock);
+            final CheckBox hideStatusBar = createCheckBox(R.string.tuning_hide_status_bar,
+                    config.hideStatusBar);
+            root.addView(hideStatusBar, matchWrap());
 
-            final CheckBox consume = new CheckBox(this);
-            consume.setText(R.string.tuning_bottom_consume);
-            consume.setTextSize(13f);
-            consume.setChecked(cfg.bottomConsume);
-            root.addView(consume);
-
-            final CheckBox launcher = new CheckBox(this);
-            launcher.setText(R.string.tuning_launcher);
-            launcher.setTextSize(13f);
-            launcher.setChecked(cfg.launcherBottom);
-            root.addView(launcher);
+            final CheckBox launcher = createCheckBox(R.string.tuning_launcher,
+                    config.launcherBottom);
+            root.addView(launcher, matchWrap());
 
             new android.app.AlertDialog.Builder(this)
                     .setTitle(R.string.tuning_title)
@@ -796,10 +891,11 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
                             new android.content.DialogInterface.OnClickListener() {
                                 @Override
                                 public void onClick(android.content.DialogInterface dialog, int which) {
-                                    saveTuning(topBar.getProgress() + 2,
-                                            bottomBar.getProgress() + 2,
-                                            verify.isChecked(), consume.isChecked(),
-                                            keepUnlock.isChecked(), launcher.isChecked(), current);
+                                    saveTuning(topBar.getProgress() + RATIO_MIN_PERCENT,
+                                            bottomBar.getProgress() + RATIO_MIN_PERCENT,
+                                            keepUnlock.isChecked(),
+                                            hideStatusBar.isChecked(),
+                                            launcher.isChecked(), current);
                                 }
                             })
                     .setNegativeButton(android.R.string.cancel, null)
@@ -809,6 +905,35 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
             Toast.makeText(this, "打开设置失败：" + t.getClass().getSimpleName(),
                     Toast.LENGTH_LONG).show();
         }
+    }
+
+    private SeekBar createRatioBar(float ratio) {
+        SeekBar bar = new SeekBar(this);
+        bar.setMax(RATIO_MAX_PERCENT - RATIO_MIN_PERCENT);
+        int percent = clampPercent(Math.round(ratio * 100f));
+        bar.setProgress(percent - RATIO_MIN_PERCENT);
+        return bar;
+    }
+
+    private CheckBox createCheckBox(int textRes, boolean checked) {
+        CheckBox box = new CheckBox(this);
+        box.setText(textRes);
+        box.setTextSize(13f);
+        box.setChecked(checked);
+        return box;
+    }
+
+    private static int clampPercent(int percent) {
+        return Math.max(RATIO_MIN_PERCENT, Math.min(RATIO_MAX_PERCENT, percent));
+    }
+
+    private LinearLayout.LayoutParams matchWrap() {
+        return new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    private int dp(int value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
 
     /** 比例文案带像素换算：不同机型状态栏/手势条高度不同，光看百分比没概念。 */
@@ -822,32 +947,27 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         return getString(resId) + "：" + percent + "%（约 " + px + "px）";
     }
 
-    private void saveTuning(int topPercent, int bottomPercent, boolean verifyOnly,
-                            boolean bottomConsume, boolean keepOnUnlock,
-                            boolean launcherBottom, RuleSet current) {
+    private void saveTuning(int topPercent, int bottomPercent, boolean keepOnUnlock,
+                            boolean hideStatusBar, boolean launcherBottom, RuleSet current) {
         try {
-            ModuleConfig cfg = (current == null ? ModuleConfig.DEFAULT : current.config())
-                    .withTopRatio(topPercent / 100f)
-                    .withBottomRatio(bottomPercent / 100f)
-                    .withVerifyOnly(verifyOnly)
-                    .withBottomConsume(bottomConsume)
+            ModuleConfig base = (current == null ? ModuleConfig.DEFAULT : current.config());
+            ModuleConfig cfg = base
+                    .withTopRatio(clampPercent(topPercent) / 100f)
+                    .withBottomRatio(clampPercent(bottomPercent) / 100f)
                     .withKeepOnUnlock(keepOnUnlock)
+                    .withHideStatusBar(hideStatusBar)
                     .withLauncherBottom(launcherBottom);
             RuleSet next = store.setConfig(cfg);
             ModuleBroadcasts.pushRules(this, next);
             Toast.makeText(this, R.string.tuning_saved, Toast.LENGTH_SHORT).show();
+            updateGameModeUi(currentArmed());
             Logx.i("tuning saved: " + cfg.describe());
         } catch (Throwable t) {
             Logx.w("saveTuning failed", t);
         }
     }
 
-    private void openAccessibilitySettings() {
-        Toast.makeText(this, R.string.accessibility_toast, Toast.LENGTH_LONG).show();
-        try {
-            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
-        } catch (Throwable t) {
-            Logx.w("open accessibility settings failed", t);
-        }
+    private static String nz(String value) {
+        return value == null ? "" : value;
     }
 }

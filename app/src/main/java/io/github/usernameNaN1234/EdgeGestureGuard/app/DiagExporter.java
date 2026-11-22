@@ -219,10 +219,8 @@ public final class DiagExporter {
         sb.append("shadeState    : ").append(r.shadeState).append('\n');
         sb.append("shadeTarget   : ").append(nz(r.shadeTarget)).append('\n');
         sb.append("bottomState   : ").append(r.bottomState).append('\n');
-        sb.append("bottomMeasure : ").append(nz(r.bottomMeasure)).append('\n');
         sb.append("bottomTarget  : ").append(nz(r.bottomTarget)).append('\n');
         sb.append("zoneConfig    : ").append(nz(r.zoneConfig)).append('\n');
-        sb.append("verifyOnly    : ").append(r.verifyOnly).append('\n');
         sb.append("armed         : ").append(r.armed)
                 .append(" (source=").append(nz(r.armedSource)).append(")\n");
         sb.append("foreground    : ").append(nz(r.foregroundPackage)).append('/')

@@ -42,14 +42,6 @@ final class Probe {
             "com.android.systemui.navigationbar.NavigationBarComponent",
     };
 
-    /** 可能负责底部 handle/手势的类（不保证存在）。 */
-    private static final String[] HOME_HANDLE_HINTS = {
-            "com.android.systemui.navigationbar.gestural.HomeHandle",
-            "com.android.systemui.navigationbar.views.HomeHandle",
-            "com.android.systemui.navigationbar.HomeHandle",
-            "com.android.systemui.statusbar.phone.HomeHandle",
-    };
-
     static Class<?> findEdgeHandler(ClassLoader cl) {
         for (String name : EDGE_CLASS_HINTS) {
             Class<?> c = Reflect.load(cl, name);
@@ -118,22 +110,6 @@ final class Probe {
                 c = c.getSuperclass();
             }
         } catch (Throwable ignored) {
-        }
-        return null;
-    }
-
-    static Class<?> findHomeHandle(ClassLoader cl) {
-        for (String name : HOME_HANDLE_HINTS) {
-            Class<?> c = Reflect.load(cl, name);
-            if (c != null) {
-                Logx.i("probe: home handle resolved by hint name -> " + name);
-                return c;
-            }
-        }
-        Class<?> byField = findByFieldType(cl, OWNER_CLASS_HINTS, "HomeHandle");
-        if (byField != null) {
-            Logx.i("probe: home handle resolved by field-type scan -> " + byField.getName());
-            return byField;
         }
         return null;
     }

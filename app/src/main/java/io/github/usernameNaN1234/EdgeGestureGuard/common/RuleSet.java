@@ -26,6 +26,12 @@ import java.util.Map;
 public final class RuleSet {
 
     public static final int FORMAT_VERSION = 2;
+
+    /** 屏蔽位掩码：一次 hot-path 判定只需要一个 int，不产生任何对象。 */
+    public static final int MASK_LEFT = 1;
+    public static final int MASK_RIGHT = 2;
+    public static final int MASK_BOTTOM = 4;
+    public static final int MASK_SHADE = 8;
     public static final RuleSet EMPTY = new RuleSet(Collections.<String, Rule>emptyMap(),
             ModuleConfig.DEFAULT);
 
@@ -95,12 +101,30 @@ public final class RuleSet {
     }
 
     /**
-     * 决策入口：Activity 级规则优先，其次包级规则，都没有 -> 不屏蔽（安全默认）。
+     * 决策入口：Activity 级规则优先，其次包级规则，都没有 -> 0（不屏蔽，安全默认）。
+     *
+     * 返回 int 位掩码而不是对象：前台变化时才调用一次，结果缓存在 HookRuntime 里，
+     * 触摸热路径只读一个 volatile int。
      */
-    public Decision decide(String packageName, String activityName) {
+    public int maskFor(String packageName, String activityName) {
         Rule r = find(packageName, activityName);
-        return r == null ? Decision.NONE
-                : new Decision(r.blockLeft, r.blockRight, r.blockBottom, r.blockTopShade);
+        if (r == null) {
+            return 0;
+        }
+        int mask = 0;
+        if (r.blockLeft) {
+            mask |= MASK_LEFT;
+        }
+        if (r.blockRight) {
+            mask |= MASK_RIGHT;
+        }
+        if (r.blockBottom) {
+            mask |= MASK_BOTTOM;
+        }
+        if (r.blockTopShade) {
+            mask |= MASK_SHADE;
+        }
+        return mask;
     }
 
     public String toJson() {
@@ -153,32 +177,5 @@ public final class RuleSet {
     @Override
     public String toString() {
         return "RuleSet(" + byKey.size() + ", " + config.describe() + ")";
-    }
-
-    public static final class Decision {
-
-        public static final Decision NONE = new Decision(false, false, false, false);
-
-        public final boolean blockLeft;
-        public final boolean blockRight;
-        public final boolean blockBottom;
-        public final boolean blockTopShade;
-
-        public Decision(boolean blockLeft, boolean blockRight,
-                        boolean blockBottom, boolean blockTopShade) {
-            this.blockLeft = blockLeft;
-            this.blockRight = blockRight;
-            this.blockBottom = blockBottom;
-            this.blockTopShade = blockTopShade;
-        }
-
-        /** 兼容旧调用点。 */
-        public Decision(boolean blockLeft, boolean blockRight, boolean blockBottom) {
-            this(blockLeft, blockRight, blockBottom, false);
-        }
-
-        public boolean any() {
-            return blockLeft || blockRight || blockBottom || blockTopShade;
-        }
     }
 }

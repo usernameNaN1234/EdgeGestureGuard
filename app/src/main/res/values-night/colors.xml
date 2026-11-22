@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand_primary">#5A52F0</color>
+    <color name="brand_primary_dark">#4A42D8</color>
+    <color name="brand_gradient_end">#7C3AED</color>
+    <color name="on_brand">#FFFFFF</color>
+    <color name="on_brand_dim">#D9D5FF</color>
+    <color name="chip_on_brand">#33FFFFFF</color>
+
+    <color name="bg">#0E1015</color>
+    <color name="surface">#171A22</color>
+    <color name="surface_alt">#1F232D</color>
+    <color name="surface_inset">#1B2029</color>
+    <color name="stroke">#262C39</color>
+
+    <color name="text_primary">#ECEEF5</color>
+    <color name="text_secondary">#A2A9B8</color>
+    <color name="text_tertiary">#7A8294</color>
+
+    <color name="pill_ok_bg">#123A2A</color>
+    <color name="pill_ok_fg">#6EE7A8</color>
+    <color name="pill_warn_bg">#3A2A12</color>
+    <color name="pill_warn_fg">#F5B96B</color>
+    <color name="pill_idle_bg">#222733</color>
+    <color name="pill_idle_fg">#A2A9B8</color>
+
+    <color name="badge_on_bg">#2A2650</color>
+    <color name="badge_on_fg">#B9B1FF</color>
+    <color name="badge_off_bg">#222733</color>
+    <color name="badge_off_fg">#8A91A0</color>
+
+    <color name="ripple_on_brand">#40FFFFFF</color>
+    <color name="ripple_dark">#33FFFFFF</color>
+
+    <color name="ok_fg">#6EE7A8</color>
+    <color name="warn_fg">#F5B96B</color>
+</resources>

@@ -62,6 +62,11 @@ final class ArmController {
                 startLockWatch(context);
             }
             startWatchdog();
+            // 游戏模刚开：立即刷新一次前台，保证第一次触摸用的就是正确的屏蔽掩码
+            try {
+                ForegroundTracker.refreshAsync();
+            } catch (Throwable ignored) {
+            }
             try {
                 StatusBarHider.enforce();
             } catch (Throwable ignored) {

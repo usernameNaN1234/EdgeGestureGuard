@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 品牌色（头图渐变 + 主按钮 + colorAccent） -->
+    <color name="brand_primary">#4F46E5</color>
+    <color name="brand_primary_dark">#4338CA</color>
+    <color name="brand_gradient_end">#7C3AED</color>
+    <color name="on_brand">#FFFFFF</color>
+    <color name="on_brand_dim">#DCD8FF</color>
+    <color name="chip_on_brand">#33FFFFFF</color>
+
+    <!-- 页面 / 卡片 -->
+    <color name="bg">#F2F3F9</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="surface_alt">#F5F6FA</color>
+    <color name="surface_inset">#F7F8FC</color>
+    <color name="stroke">#E3E5EE</color>
+
+    <!-- 文字 -->
+    <color name="text_primary">#1B1B22</color>
+    <color name="text_secondary">#6E7280</color>
+    <color name="text_tertiary">#9AA0AE</color>
+
+    <!-- 状态胶囊：正常=绿，未挂载=橙，未知=灰 -->
+    <color name="pill_ok_bg">#E6F8EE</color>
+    <color name="pill_ok_fg">#0F7B4F</color>
+    <color name="pill_warn_bg">#FFF1E0</color>
+    <color name="pill_warn_fg">#B25A05</color>
+    <color name="pill_idle_bg">#F0F1F6</color>
+    <color name="pill_idle_fg">#6E7280</color>
+
+    <!-- 列表项规则摘要徽标 -->
+    <color name="badge_on_bg">#EDEBFF</color>
+    <color name="badge_on_fg">#4F46E5</color>
+    <color name="badge_off_bg">#F0F1F6</color>
+    <color name="badge_off_fg">#8A8F9C</color>
+
+    <!-- 涟漪 -->
+    <color name="ripple_on_brand">#40FFFFFF</color>
+    <color name="ripple_dark">#1F000000</color>
+
+    <!-- 语义色 -->
+    <color name="ok_fg">#0F7B4F</color>
+    <color name="warn_fg">#B25A05</color>
+</resources>

@@ -11,6 +11,7 @@ import android.widget.ImageView;
 import android.widget.TextView;
 
 import io.github.usernameNaN1234.EdgeGestureGuard.R;
+import io.github.usernameNaN1234.EdgeGestureGuard.common.Logx;
 import io.github.usernameNaN1234.EdgeGestureGuard.common.Rule;
 import io.github.usernameNaN1234.EdgeGestureGuard.common.RuleStore;
 
@@ -23,8 +24,8 @@ import java.util.Set;
 /**
  * 应用列表：为每个应用选择要屏蔽哪些手势（左/右返回、顶部下拉、底部上滑）。
  *
- * 1.7.0 语义：这些规则**只在游戏模式开启时生效**。
- * 游戏模式关着 = 规则一条都不读，手势路径只做一次 volatile 判断（开销≈0）。
+ * 视觉：白色圆角卡片行（图标 + 应用名 + 包名 + 规则摘要徽标），点击展开 2x2 手势开关。
+ * 语义：这些规则**只在游戏模式开启时生效**；关着时 Hook 端不读规则表。
  */
 public final class AppListAdapter extends BaseAdapter {
 
@@ -45,10 +46,11 @@ public final class AppListAdapter extends BaseAdapter {
     private String query = "";
 
     public AppListAdapter(Context context, RuleStore store, Listener listener) {
-        this.context = context;
+        Context app = context.getApplicationContext();
+        this.context = app == null ? context : app;
         this.store = store;
         this.listener = listener;
-        this.inflater = LayoutInflater.from(context);
+        this.inflater = LayoutInflater.from(this.context);
     }
 
     public void setData(List<AppEntry> data) {
@@ -64,14 +66,6 @@ public final class AppListAdapter extends BaseAdapter {
         applyFilter();
     }
 
-    public void setSupport(boolean bottomObserved, boolean shadeSupported) {
-        // no-op（是否生效统一由游戏模式决定）
-    }
-
-    public void setBottomSupported(boolean supported) {
-        // no-op
-    }
-
     private void applyFilter() {
         visible.clear();
         for (AppEntry entry : all) {
@@ -82,6 +76,7 @@ public final class AppListAdapter extends BaseAdapter {
         notifyDataSetChanged();
     }
 
+    /** 展开 / 收起某一行的 2x2 手势开关。 */
     public void toggle(int position) {
         if (position < 0 || position >= visible.size()) {
             return;
@@ -126,9 +121,11 @@ public final class AppListAdapter extends BaseAdapter {
         holder.icon.setImageDrawable(item.icon);
 
         Rule rule = store.getPackageRule(item.packageName);
-        holder.summary.setText(summary(rule));
-        holder.expand.setVisibility(expanded.contains(item.packageName) ? View.VISIBLE : View.GONE);
+        bindSummary(holder, rule);
+        holder.expand.setVisibility(expanded.contains(item.packageName)
+                ? View.VISIBLE : View.GONE);
 
+        // 先摘掉监听再 setChecked，避免复用行时触发误写
         holder.left.setOnCheckedChangeListener(null);
         holder.right.setOnCheckedChangeListener(null);
         holder.bottom.setOnCheckedChangeListener(null);
@@ -143,7 +140,11 @@ public final class AppListAdapter extends BaseAdapter {
                 new CompoundButton.OnCheckedChangeListener() {
                     @Override
                     public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                        apply(item, holder);
+                        try {
+                            apply(item, holder);
+                        } catch (Throwable t) {
+                            Logx.w("apply rule failed", t);
+                        }
                     }
                 };
         holder.left.setOnCheckedChangeListener(changeListener);
@@ -154,19 +155,34 @@ public final class AppListAdapter extends BaseAdapter {
         return view;
     }
 
+    /** 勾选即写盘（四项全不勾 = 删除该应用规则），并通知外层广播。 */
     private void apply(AppEntry item, ViewHolder holder) {
         boolean left = holder.left.isChecked();
         boolean right = holder.right.isChecked();
         boolean bottom = holder.bottom.isChecked();
         boolean top = holder.topShade.isChecked();
+
         store.setPackageRule(item.packageName, left, right, bottom, top);
+        Rule rule = store.getPackageRule(item.packageName);
+        bindSummary(holder, rule);
+
         if (!left && !right && !bottom && !top) {
             expanded.remove(item.packageName);
+            holder.expand.setVisibility(View.GONE);
         }
-        notifyDataSetChanged();
         if (listener != null) {
             listener.onRulesChanged(item.packageName, left, right, bottom, top);
         }
+    }
+
+    /** 规则摘要：如「左 右 顶」；没有任何规则时显示「未屏蔽」并切到灰色徽标。 */
+    private void bindSummary(ViewHolder holder, Rule rule) {
+        boolean configured = rule != null && rule.blocksAnything();
+        holder.summary.setText(summary(rule));
+        holder.summary.setBackgroundResource(configured
+                ? R.drawable.bg_badge_on : R.drawable.bg_badge_off);
+        holder.summary.setTextColor(context.getColor(configured
+                ? R.color.badge_on_fg : R.color.badge_off_fg));
     }
 
     private String summary(Rule rule) {
@@ -187,9 +203,9 @@ public final class AppListAdapter extends BaseAdapter {
             sb.append("底 ");
         }
         if (sb.length() == 0) {
-            return context.getString(R.string.summary_none_configured);
+            return context.getString(R.string.summary_none);
         }
-        return sb.append("已屏蔽").toString();
+        return sb.toString().trim();
     }
 
     private static final class ViewHolder {
