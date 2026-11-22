@@ -137,6 +137,30 @@ def main():
     print("DONE")
 
 
+def release_body(version):
+    """发布说明：优先取 CHANGELOG.md 里对应版本的段落，取不到就退回通用文案。"""
+    notes = ""
+    try:
+        with open("CHANGELOG.md", encoding="utf-8") as fh:
+            text = fh.read()
+        import re
+        anchor = "^## \\[" + re.escape(version) + "\\][^\\n]*\\n"
+        match = re.search(anchor + "(.*?)(?=\\n## \\[|\\Z)", text, re.S | re.M)
+        if match:
+            notes = match.group(1).strip()
+    except Exception as exc:
+        print("release: changelog read failed:", exc)
+    body = "## EdgeGestureGuard " + version + "\n\n"
+    if notes:
+        body += notes + "\n\n---\n\n"
+    body += "- 包名：io.github.usernameNaN1234.EdgeGestureGuard\n"
+    body += "- 签名：release key（RSA 4096, CN=ink-cardistry）；与 1.7.2 起的所有 release 同签名，可直接覆盖安装\n"
+    body += "- 作用域（推荐）：System UI + 桌面 / Launcher\n"
+    body += "- 从 debug 签名或旧包名的版本升级时，需先卸载旧版\n\n"
+    body += "完整更新日志见 [CHANGELOG.md](CHANGELOG.md)。"
+    return body
+
+
 def publish_release():
     """创建 GitHub Release 并上传带 release 签名的 APK。
 
@@ -165,12 +189,7 @@ def publish_release():
             {"ref": "refs/tags/" + tag, "sha": obj["sha"]})
         print("release: tag", tag, "created")
 
-    body = ("## EdgeGestureGuard " + version + "\n\n"
-            "- 包名：io.github.usernameNaN1234.EdgeGestureGuard\n"
-            "- 签名：release key（RSA 4096, CN=ink-cardistry）\n"
-            "- 作用域（推荐）：System UI + 桌面 / Launcher\n\n"
-            "安装前请卸载旧版（签名不同无法覆盖安装）。\n\n"
-            "详见 README。")
+    body = release_body(version)
     try:
         rel = api("POST", "/repos/%s/releases" % REPO, {
             "tag_name": tag, "name": "EdgeGestureGuard " + version,
