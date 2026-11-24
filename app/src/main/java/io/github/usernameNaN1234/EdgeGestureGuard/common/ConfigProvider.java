@@ -10,12 +10,10 @@ import android.os.Binder;
 import android.os.Process;
 
 /**
- * 兜底拉取通道：SystemUI 进程内的 Hook 可以直接 query 最新规则。
- *
- * 说明：Android 11+ 的包可见性 / SELinux 可能让这条通道失败，
- * 因此它只是"尽力而为"的兜底，主通道始终是广播推送 + SystemUI 私有目录缓存。
+ * 配置兜底通道：SystemUI / 桌面进程可以直接 query 最新配置（广播还没到时用）。
+ * 只读，且只对可信调用方开放。
  */
-public final class RulesProvider extends ContentProvider {
+public final class ConfigProvider extends ContentProvider {
 
     public static final String COLUMN_JSON = "json";
 
@@ -39,7 +37,7 @@ public final class RulesProvider extends ContentProvider {
                 Logx.w("provider: rejected caller uid=" + uid);
                 return null;
             }
-            String json = new RuleStore(ctx).load().toJson();
+            String json = new ConfigStore(ctx).load().toJson().toString();
             MatrixCursor cursor = new MatrixCursor(new String[]{COLUMN_JSON}, 1);
             cursor.addRow(new Object[]{json});
             return cursor;
@@ -72,7 +70,7 @@ public final class RulesProvider extends ContentProvider {
 
     @Override
     public String getType(Uri uri) {
-        return "vnd.android.cursor.item/vnd." + ModuleContract.MODULE_PACKAGE + ".rules";
+        return "vnd.android.cursor.item/vnd." + ModuleContract.MODULE_PACKAGE + ".config";
     }
 
     @Override
@@ -85,41 +83,8 @@ public final class RulesProvider extends ContentProvider {
         return 0;
     }
 
-    /**
-     * 唯一的写入口：Launcher 进程回报"策略 B 挂了多少个入口"。
-     * 只接受可信调用方（模块自身 / SystemUI / 桌面），只认一个字段，不做其它写入。
-     */
     @Override
     public int update(Uri uri, ContentValues values, String selection, String[] selectionArgs) {
-        try {
-            Context ctx = getContext();
-            if (ctx == null || values == null) {
-                return 0;
-            }
-            int uid = Binder.getCallingUid();
-            if (!isTrustedCaller(ctx, uid)) {
-                Logx.w("provider update: rejected caller uid=" + uid);
-                return 0;
-            }
-            String status = values.getAsString(ModuleContract.COLUMN_LAUNCHER_STATUS);
-            String diag = values.getAsString(ModuleContract.COLUMN_LAUNCHER_DIAG);
-            if (status == null && diag == null) {
-                return 0;
-            }
-            android.content.SharedPreferences.Editor editor = ctx
-                    .getSharedPreferences(ModuleContract.PREFS_RULES, Context.MODE_PRIVATE).edit();
-            if (status != null) {
-                editor.putString(ModuleContract.PREF_LAUNCHER_STATUS, status);
-            }
-            if (diag != null) {
-                editor.putString(ModuleContract.PREF_LAUNCHER_DIAG, diag);
-            }
-            editor.apply();
-            Logx.i("launcher status reported: " + status);
-            return 1;
-        } catch (Throwable t) {
-            Logx.w("provider update failed", t);
-            return 0;
-        }
+        return 0;
     }
 }

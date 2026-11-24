@@ -28,7 +28,7 @@ public final class ArmClient {
         if (app == null) {
             app = context;
         }
-        return app.getSharedPreferences(ModuleContract.PREFS_RULES, Context.MODE_PRIVATE);
+        return app.getSharedPreferences(ModuleContract.PREFS_CONFIG, Context.MODE_PRIVATE);
     }
 
     /** 最近一次已知状态（不是权威值）。 */

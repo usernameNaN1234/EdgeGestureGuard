@@ -5,7 +5,6 @@ import android.view.MotionEvent;
 
 import io.github.usernameNaN1234.EdgeGestureGuard.common.Logx;
 import io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleConfig;
-import io.github.usernameNaN1234.EdgeGestureGuard.common.RuleSet;
 
 /**
  * 手势闸门（真正做「屏蔽 / 放行」决策的地方）。
@@ -17,9 +16,9 @@ import io.github.usernameNaN1234.EdgeGestureGuard.common.RuleSet;
  * 性能（关键，按调用顺序）：
  *  1) !ArmController.isArmed() -> 立刻返回：只读一个 volatile boolean；
  *  2) 非 DOWN 事件且没有任何流在被吞 -> 立刻返回：只读一个 volatile int；
- *  3) DOWN 事件先读缓存好的掩码 HookRuntime.fgMask：当前应用没规则就直接返回，
+ *  3) DOWN 事件先读缓存好的掩码 HookRuntime.blockMask：没有勾选任何手势就直接返回，
  *     连屏幕高度/坐标都不算；
- *  4) 只有「游戏模式开启 + 当前应用有规则 + 起手在对应区域」才会进入判定，
+ *  4) 只有「游戏模式开启 + 勾选了该类手势 + 起手在对应区域」才会进入判定，
  *     那时才读 rawY、算高度、查掩码。
  *
  * 四条通道共用同一套闸门：EDGE（返回手势 monitor）、SHADE（通知栏触摸链）、
@@ -65,7 +64,7 @@ final class HookLogic {
         return gate(handler, ev, KIND_EDGE, true, false);
     }
 
-    /** Launcher 进程入口（策略 B）。 */
+    /** Launcher 进程入口（底部上滑）。 */
     static boolean onLauncherBottomTouch(Object owner, MotionEvent ev) {
         return gate(owner, ev, KIND_LAUNCHER, false, false);
     }
@@ -80,7 +79,7 @@ final class HookLogic {
      * 3 秒内有效，避免用到很久以前的手势。
      */
     static boolean shouldBlockCurrentDown() {
-        if ((HookRuntime.fgMask & RuleSet.MASK_SHADE) == 0) {
+        if ((HookRuntime.blockMask & ModuleConfig.MASK_SHADE) == 0) {
             return false;
         }
         if (!lastDownTopZone) {
@@ -148,8 +147,8 @@ final class HookLogic {
         }
 
         // ③ 当前前台应用的屏蔽掩码（前台切换时已算好，这里零分配）。
-        final int mask = HookRuntime.fgMask;
-        if (mask == 0 || (kind == KIND_LAUNCHER && !launcherEnabled())) {
+        final int mask = HookRuntime.blockMask;
+        if (mask == 0) {
             return false;
         }
 
@@ -164,7 +163,7 @@ final class HookLogic {
 
         boolean block = false;
         if (kind == KIND_SHADE) {
-            block = !shadeExpanded && (mask & RuleSet.MASK_SHADE) != 0 && topZone;
+            block = !shadeExpanded && (mask & ModuleConfig.MASK_SHADE) != 0 && topZone;
             if (block) {
                 try {
                     StatusBarHider.enforce();
@@ -173,7 +172,7 @@ final class HookLogic {
             }
         } else if (kind == KIND_LAUNCHER) {
             // 双重校验：必须起手在底部区，避免坐标口径不一致时吞掉整屏
-            block = bottomZone && (mask & RuleSet.MASK_BOTTOM) != 0;
+            block = bottomZone && (mask & ModuleConfig.MASK_BOTTOM) != 0;
         } else {
             // 返回手势通道：底部上滑由 Launcher 执行，在 SystemUI 侧吞事件拦不住，
             // 还会让游戏窗口收不到底部 12% 的触摸（实测结论），所以这里不判底部。
@@ -184,19 +183,14 @@ final class HookLogic {
             } else {
                 side = EdgeMetrics.sideOf(owner, ev);
             }
-            block = (side == EdgeMetrics.SIDE_LEFT && (mask & RuleSet.MASK_LEFT) != 0)
-                    || (side == EdgeMetrics.SIDE_RIGHT && (mask & RuleSet.MASK_RIGHT) != 0);
+            block = (side == EdgeMetrics.SIDE_LEFT && (mask & ModuleConfig.MASK_LEFT) != 0)
+                    || (side == EdgeMetrics.SIDE_RIGHT && (mask & ModuleConfig.MASK_RIGHT) != 0);
         }
         if (block) {
             openStream(key, now);
             blockLog(kind, rawY, height, topZone, bottomZone);
         }
         return block;
-    }
-
-    private static boolean launcherEnabled() {
-        ModuleConfig cfg = HookRuntime.config;
-        return cfg != null && cfg.launcherBottom;
     }
 
     // ------------------------------------------------------------------
@@ -269,8 +263,7 @@ final class HookLogic {
             Xlog.step("BLOCK " + kindName(kind)
                     + " rawY=" + (int) rawY + "/" + height
                     + " inTopZone=" + topZone + " inBottomZone=" + bottomZone
-                    + " fg=" + HookRuntime.fgPackage
-                    + " mask=" + HookRuntime.fgMask);
+                    + " mask=" + HookRuntime.blockMask);
         } catch (Throwable ignored) {
         }
     }
@@ -295,7 +288,7 @@ final class HookLogic {
      */
     static boolean shouldBlockBackInvocation(Object callback) {
         try {
-            int mask = HookRuntime.fgMask;
+            int mask = HookRuntime.blockMask;
             if (mask == 0) {
                 return false;
             }
@@ -306,9 +299,9 @@ final class HookLogic {
             boolean onLeftEdge = Reflect.booleanField(handler,
                     Reflect.field(handler.getClass(), "mIsOnLeftEdge", "mOnLeftEdge"), false);
             boolean block = onLeftEdge
-                    ? (mask & RuleSet.MASK_LEFT) != 0 : (mask & RuleSet.MASK_RIGHT) != 0;
+                    ? (mask & ModuleConfig.MASK_LEFT) != 0 : (mask & ModuleConfig.MASK_RIGHT) != 0;
             Xlog.debug("backInvoked: left=" + onLeftEdge + " block=" + block
-                    + " fg=" + HookRuntime.fgPackage);
+);
             return block;
         } catch (Throwable t) {
             Xlog.step("backInvoked check failed: " + t);

@@ -31,9 +31,8 @@ public final class XposedEntry implements IXposedHookLoadPackage {
                 return;
             }
             if (!ModuleContract.SYSTEMUI_PACKAGE.equals(lpparam.packageName)) {
-                // 策略 B：只有用户手工把作用域扩展到桌面进程时，这里才会被调用。
-                // 代码路径与 SystemUI 完全独立（不装返回手势 / shade Hook），
-                // 且功能默认关闭（规则表里的 config.launcherBottom = false）。
+                // 底部上滑的拦截跑在桌面进程里：只有用户把作用域扩展到桌面时才会走到这里。
+                // 代码路径与 SystemUI 完全独立（不装返回手势 / shade Hook），只装底部手势 Hook。
                 if (ModuleContract.isLauncherPackage(lpparam.packageName)) {
                     handleLauncherProcess(lpparam);
                 }
@@ -117,13 +116,13 @@ public final class XposedEntry implements IXposedHookLoadPackage {
     }
 
     /**
-     * 策略 B（实验性）：运行在 Launcher 进程里，只做"底部上滑"这一件事。
+     * 桌面进程：只做"底部上滑"这一件事（底部上滑由 Launcher 执行）。
      *
      * 与 SystemUI 路径完全隔离：
      *  - 不装返回手势 Hook、不装 shade Hook、不写 Settings.Global 自检记录
      *    （Launcher 没有 WRITE_SECURE_SETTINGS，写了也没用，还会污染 App 的自检判断）；
      *  - 只装 LauncherBottomHooks + 复用同一套规则通道（广播/Provider/本地缓存）；
-     *  - 是否真的拦截由 config.launcherBottom 决定，默认 false = 只挂不打。
+     *  - 是否真的拦截由「游戏模式 + 配置里的底部开关」决定（这里只负责装 Hook）。
      *
      * 可用性结论只能从 logcat 看（[LAUNCHER] 前缀）：挂载数量、是否拿到 finishInputEvent。
      */
@@ -150,7 +149,7 @@ public final class XposedEntry implements IXposedHookLoadPackage {
                 Logx.e("[LAUNCHER] install failed", t);
             }
             Xlog.step("[LAUNCHER] hooks=" + count
-                    + " enabled=" + (HookRuntime.config != null && HookRuntime.config.launcherBottom));
+                    + " config=" + (HookRuntime.config == null ? "?" : HookRuntime.config.describe()));
             Context context = Ctx.appContext();
             if (context != null) {
                 initPipe(context);
@@ -218,32 +217,13 @@ public final class XposedEntry implements IXposedHookLoadPackage {
         pipeInited = true;
         try {
             Xlog.step("pipe init, ctx=" + context.getPackageName());
-            RulesPipe.init(context);
+            ConfigPipe.init(context);
             Xlog.step("pipe init done");
         } catch (Throwable t) {
-            Logx.e("RulesPipe.init failed", t);
+            Logx.e("ConfigPipe.init failed", t);
             Xlog.step("pipe init FAILED: " + t);
         }
-        // 推送式前台跟踪：装好后触摸回调不再做 Binder 查询。
-        // 注册失败时自动退回"按需查询"（行为与旧版一致），不影响功能。
-        try {
-            if (!stackWatchStarted) {
-                stackWatchStarted = true;
-                if (TaskStackWatch.start()) {
-                    ForegroundTracker.enableTracking();
-                    ForegroundTracker.refreshAsync();
-                    Xlog.step("foreground tracking: push mode (触摸路径零 Binder)");
-                } else {
-                    Xlog.step("foreground tracking: fallback (按需查询)");
-                }
-            }
-        } catch (Throwable t) {
-            Xlog.step("task-stack setup failed: " + t);
-        }
     }
-
-    private static volatile boolean stackWatchStarted;
-
     private static Context currentContext() {
         // 纯反射获取，绝不 import LSPosed 专有类（见 Ctx 的注释）
         return Ctx.appContext();

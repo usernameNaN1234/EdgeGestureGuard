@@ -2,31 +2,27 @@
 <resources>
     <!-- manifest / 模块声明 / 常驻通知 / 磁贴：这些名字仍被 java 或 manifest 引用，必须保留 -->
     <string name="app_name">EdgeGestureGuard</string>
-    <string name="xposed_description">按应用屏蔽左右返回、顶部通知栏与底部上滑手势，打音游时防误触</string>
+    <string name="xposed_description">游戏模式下全局屏蔽左右返回、顶部下拉与底部上滑，打音游防误触</string>
     <string name="tile_label">游戏模式</string>
 
     <!-- 头部 -->
-    <string name="app_subtitle">打音游防误触 · 按应用屏蔽系统手势</string>
+    <string name="app_subtitle">全局手势屏蔽 · 打音游防误触</string>
     <string name="app_version_fmt">v%1$s</string>
     <string name="version_unknown">v?</string>
 
-    <!-- 游戏模式卡片 -->
+    <!-- 游戏模式状态卡（只读：开启入口只有通知栏常驻通知 / 控制中心磁贴） -->
     <string name="game_mode_title">游戏模式</string>
+    <string name="game_mode_badge">总闸</string>
     <string name="game_state_on">已开启</string>
     <string name="game_state_off">已关闭</string>
-    <string name="game_mode_desc_on">正在按各应用规则屏蔽系统手势；锁屏解锁会自动退出</string>
-    <string name="game_mode_desc_off">开启后按下方每个应用的规则屏蔽系统手势</string>
-    <string name="game_mode_unlock_hint">提示：锁屏后解锁会自动退出游戏模式（可在「调参」里改为保持）。</string>
-    <string name="btn_game_mode_on">退出游戏模式</string>
-    <string name="btn_game_mode_off">开启游戏模式</string>
-    <string name="game_mode_on_toast">游戏模式已开启：按各应用规则屏蔽系统手势，锁屏解锁自动退出。</string>
-    <string name="game_mode_off_toast">游戏模式已退出，系统手势恢复正常。</string>
+    <string name="game_mode_howto">开启方式：下拉通知栏点常驻通知，或控制中心磁贴</string>
+    <string name="game_unlock_exit">锁屏解锁后自动退出游戏模式</string>
+    <string name="game_unlock_keep">锁屏解锁后保持游戏模式开启</string>
 
-    <!-- 状态区 -->
-    <string name="status_title">模块状态</string>
+    <!-- Hook 状态卡 -->
+    <string name="status_title">Hook 状态</string>
     <string name="status_loading">正在向 SystemUI 请求状态…</string>
     <string name="status_no_response_title">SystemUI 未响应（4 秒内没有任何状态回报）</string>
-    <string name="status_no_response_short">SystemUI 未响应</string>
     <string name="status_pill_edge_label">左右返回</string>
     <string name="status_pill_shade_label">顶部下拉</string>
     <string name="status_pill_bottom_label">底部上滑</string>
@@ -34,47 +30,43 @@
     <string name="pill_state_off">未挂载</string>
     <string name="pill_state_wait">检测中</string>
     <string name="pill_state_none">无回报</string>
-    <string name="rule_count_fmt">规则 %1$d 条</string>
-    <string name="rule_count_unknown">规则 —</string>
-    <string name="foreground_fmt">前台：%1$s</string>
-    <string name="foreground_unknown">前台应用未知</string>
-    <string name="foreground_waiting">等待 SystemUI 回报…</string>
     <string name="status_show_detail">详情 ▾</string>
-    <string name="status_show_detail_warn">详情 · %1$d 条提示 ▾</string>
+    <string name="status_show_detail_warn">详情 · %1$d 项异常 ▾</string>
     <string name="status_hide_detail">收起 ▴</string>
 
-    <!-- 应用列表 -->
-    <string name="search_hint">搜索应用名或包名</string>
-    <string name="include_system_apps">含系统应用</string>
-    <string name="empty_list">没有匹配的应用</string>
-    <string name="summary_none">未屏蔽</string>
+    <!-- 手势设置卡 -->
+    <string name="gestures_title">手势设置</string>
+    <string name="gestures_hint">仅游戏模式开启时生效；这里选择要屏蔽哪些手势。</string>
+    <string name="gestures_gate_hint">通知栏下拉与状态栏隐藏受总闸控制，开关只决定屏蔽哪些手势。</string>
     <string name="block_left">左边缘返回</string>
     <string name="block_right">右边缘返回</string>
-    <string name="block_top_shade">顶部下拉</string>
+    <string name="block_top_shade">顶部下拉通知栏</string>
     <string name="block_bottom">底部上滑</string>
-    <string name="block_rules_hint">勾选立即生效；仅在游戏模式开启时拦截。</string>
+
+    <!-- 屏蔽区比例卡 -->
+    <string name="zone_title">屏蔽区比例</string>
+    <string name="zone_hint" formatted="false">区比例 = 屏幕高度的百分比（2% ~ 30%）。只拦最边缘区域，音游中间判定区不受影响。</string>
+    <string name="zone_top">顶部屏蔽区</string>
+    <string name="zone_bottom">底部屏蔽区</string>
+    <string name="zone_ratio_fmt" formatted="false">%1$d%%（约 %2$dpx）</string>
+
+    <!-- 其它开关卡 -->
+    <string name="other_title">其它</string>
+    <string name="keep_unlock_title">锁屏解锁后保持游戏模式</string>
+    <string name="keep_unlock_desc">默认关闭：锁屏 → 解锁会自动退出游戏模式。</string>
+    <string name="hide_status_bar_title">游戏模式期间隐藏状态栏</string>
+    <string name="hide_status_bar_desc">减少顶部边缘的误触；退出游戏模式后恢复显示。</string>
 
     <!-- 底部操作 -->
-    <string name="btn_tuning">调参</string>
     <string name="btn_export_diag">导出诊断</string>
     <string name="btn_sync">重新同步</string>
     <string name="diag_exported">已导出：%1$s</string>
-    <string name="sync_toast">已重新同步规则并请求状态</string>
-
-    <!-- 调参对话框 -->
-    <string name="tuning_title">边缘区域与游戏模式行为</string>
-    <string name="tuning_hint" formatted="false">区比例 = 屏幕高度的百分比（2% ~ 30%）。只拦这些极边缘区域，音游中间判定区不受影响。</string>
-    <string name="tuning_top">顶部屏蔽区</string>
-    <string name="tuning_bottom">底部屏蔽区</string>
-    <string name="tuning_keep_unlock">锁屏解锁后保持游戏模式（默认关＝自动退出）</string>
-    <string name="tuning_hide_status_bar">游戏模式期间隐藏状态栏</string>
-    <string name="tuning_launcher">在 Launcher 进程拦截底部上滑（需把桌面加进 LSPosed 作用域）</string>
-    <string name="tuning_saved">已保存并推送到 SystemUI</string>
+    <string name="sync_toast">已重新推送配置并请求状态</string>
 
     <!-- 常驻通知 -->
     <string name="notif_title">游戏模式：已启用</string>
-    <string name="notif_text">按应用规则屏蔽系统手势 · 锁屏解锁自动退出</string>
-    <string name="notif_text_long" formatted="false">已按应用规则屏蔽左右返回 / 顶部下拉 / 底部上滑，防止打音游时误触。
+    <string name="notif_text">全局手势屏蔽已生效</string>
+    <string name="notif_text_long" formatted="false">已按设置全局屏蔽左右返回 / 顶部下拉 / 底部上滑，防止打音游时误触。
 退出：① 锁屏后解锁（自动退出）；② 点下面「退出游戏模式」；③ 控制中心磁贴。</string>
     <string name="notif_action_exit">退出游戏模式</string>
 </resources>

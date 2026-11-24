@@ -781,45 +781,39 @@ ZONE SHADE action=DOWN rawY=64 screenHeight=2400 inTopZone=true inBottomZone=fal
 
 ---
 
-## 1.9.0：只保留核心 + 热路径重构 + UI 重做
+---
 
-这一版是减法版本。三件事：删掉不产生收益的代码、把触摸热路径压到极限、把控制器 UI 做正常。
+## 1.9.1：底部上滑为什么之前不生效，以及为什么删掉按应用配置
 
-### 删掉的东西（以及为什么）
+### 根因
 
-| 删除项 | 原因 |
-|---|---|
-| 无障碍前台助手 `ForegroundAccessibilityService` | 用户要多开一个无障碍服务只为把包名推给 SystemUI；`TaskStackListener` + ActivityTaskManager 已经够用 |
-| `ForegroundTracker` 的 UsageStats 兜底 | 每次要扫最近 60 秒 `UsageEvents`（Binder + 遍历），只在 ATMS 完全不可用时才有用，实际从未走到 |
-| 导航栏滑出抑制 `NavBarHooks` | 一直 `NAV_HOOK_ENABLED = false`；transient bar 由 system_server 的 DisplayPolicy 发起，用户态挂不上，只是死代码 |
-| 「验证模式」`verifyOnly` | 调试期用来对照日志；却让热路径多一个分支、UI 多一个开关。拦截本身有限流日志，排障足够 |
-| 「策略 A 吞事件」`bottomConsume` | 实测在 SystemUI 的返回手势通道上消费底部事件**拦不住 Home**，却让游戏窗口收不到底部 12% 的触摸 —— 对音游纯亏 |
-| 观测计数器 `bottomZoneSeen / bottomZoneBlocked / topZoneSeen / shadeSeen` | 只为证明策略 A 的结论存在；策略 A 删了它们就没有意义 |
-| `StatusFile`（写 /sdcard 的轨迹文件） | 每次 `Xlog.step` 都做一次文件 IO，而 step 会被拦截日志调用 —— 历史耗电点。现在日志只进内存环形缓冲 |
-| 规则推送时给 7 个桌面包各发一次广播 | 只有打开「Launcher 底部 Hook」才需要，否则每次改规则都白发 7 个广播 |
+底部上滑的执行方是**桌面进程**（com.android.quickstep.TouchInteractionService），
+所以拦截 Hook 也必须装在桌面进程里（LauncherBottomHooks）。
 
-### 热路径（`HookLogic.gate`）的新顺序
+而 1.9.0 及以前的判定链是「守卫 → 查当前前台应用 → 查该应用的规则 → 得到掩码」。
+在 SystemUI 里这条链能跑（SystemUI 有权限查 ActivityTaskManager）；
+**在桌面进程里拿不到前台应用**（普通 App 权限不够，或任务栈推送没注册成功），
+结果掩码恒为 0 → 底部上滑永远放行。SystemUI 侧的日志看起来一切正常，
+但真正要吞事件的那个进程根本没在拦。
 
-```
-ev == null ? return
-!ArmController.isArmed() ? return                 // 1 次 volatile 读
-action != DOWN && blockedCount == 0 ? return      // 1 次 volatile 读
-action != DOWN ? 查流状态（≤8 条）
-mask = HookRuntime.fgMask; mask == 0 ? return     // 1 次 volatile int 读，连坐标都不算
-算 rawY / 顶部区 / 底部区 -> 决定是否 block
-```
+### 解法
 
-配套改动：
+1. 去掉「按应用」：不需要前台应用，也就不需要在桌面进程里查前台。
+   桌面进程只看两件事：ArmController.isArmed() 与 HookRuntime.blockMask 的底部位。
+2. 游戏模式状态必须同步到桌面进程：
+   - App 开关时同时广播给 SystemUI 与所有桌面包；
+   - SystemUI 每次 arm/disarm 再广播一次给桌面（防止桌面漏收）；
+   - 桌面启动时发 ACTION_ARM_QUERY 问 SystemUI，SystemUI 回广播。
+3. 挂载结果由桌面进程主动上报（ACTION_LAUNCHER_STATUS），App 状态卡不会假装成功。
 
-- 前台切换时把「当前应用要屏蔽哪些手势」预先算成 `int` 位掩码（`RuleSet.MASK_LEFT/RIGHT/BOTTOM/SHADE`），
-  规则更新或前台切换才重算；`RuleSet.Decision` 的对象分配被彻底删除。
-- 手势流跟踪从 `ConcurrentHashMap<Long,Long>` + 每次 `synchronized` 改成固定大小 `long[]` + `volatile int blockedCount`，
-  无自动装箱、无迭代器分配。
-- `Zones` 缓存屏幕宽高（竖屏 3200 / 横屏 1440 自动重算），只在 DOWN 里调用；不再对每条 MOVE 求尺寸。
-- `StatusBarHider.enforce()` 加 `hidden` 快路径，隐藏之后只读一个 boolean。
-- Shade 触摸 Hook 不再对「没拦住」的事件打日志，只在真的拦下时限流记一行。
+### 顺带删掉
 
-### 保留的判据
+- ForegroundTracker / TaskStackWatch / 规则表（RuleSet / Rule / RuleStore）：
+  全部只服务「按应用」。删掉后 SystemUI 空闲时没有任何 Binder / 反射调用。
+- App 的应用列表与搜索：入口只剩通知与磁贴，App 变成纯设置 / 状态页。
 
-- 唯一总闸仍是游戏模式 `ArmController.isArmed()`（进程内 volatile，各进程独立，所以 ARM/DISARM 要同时发给 SystemUI 与桌面）。
-- 底部上滑仍然只在桌面进程拦截（`LauncherBottomHooks`），SystemUI 侧不装任何底部 Hook。
+### 生效条件（务必确认）
+
+- LSPosed 作用域**必须**勾选 System UI **和** 桌面（com.android.launcher3）；
+- 改完作用域要重启手机（或至少让桌面进程重启）；
+- 游戏模式开启 + 设置里勾选了「底部上滑」。

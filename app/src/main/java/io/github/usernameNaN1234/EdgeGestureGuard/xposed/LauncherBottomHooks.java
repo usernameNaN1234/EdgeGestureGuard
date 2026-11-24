@@ -15,13 +15,13 @@ import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 
 /**
- * 策略 B：Launcher 进程内的底部上滑屏蔽（**实验性，默认关闭**）。
+ * 底部上滑屏蔽（Launcher 进程内执行）。
  *
  * 事实前提（AOSP main 核对）：AOSP 16/17 的「上滑回桌面 / 上滑进最近任务」由
  * com.android.quickstep.TouchInteractionService（在 Launcher 进程）通过
  * InputManager.monitorGestureInput() 接收并执行，SystemUI 进程里没有最终执行逻辑。
  *
- * 挂在哪一层（这一点决定了策略 B 到底能不能用）：
+ * 挂在哪一层（这一点决定了能不能拦得住）：
  *
  *   错误做法：挂 TouchInteractionService#onInputEvent(InputEvent)
  *     —— 它只是 getInputReceiver(looper, choreographer, this::onInputEvent) 里的
@@ -33,9 +33,9 @@ import de.robv.android.xposed.XposedBridge;
  * 所以 install() 的顺序是：**先挂包装 receiver（主力）→ 再挂 TIS 自身（兜底探测）**。
  * 两套 Hook 各自独立判断，任一条命中即可吞掉手势；都失败就只是"没效果"，不会崩。
  *
- * 生效还需要用户侧两个显式动作（缺一不可）：
- *   1) LSPosed 里把作用域额外勾选当前桌面/Launcher 包名；
- *   2) 模块 UI「阈值/验证」里勾选 "Launcher 底部 Hook（策略 B）"，或开启游戏模式。
+ * 生效需要两个条件（缺一不可）：
+ *   1) LSPosed 里把作用域额外勾选当前桌面 / Launcher 包名；
+ *   2) 游戏模式开启，且配置里勾选了「底部上滑」。
  */
 final class LauncherBottomHooks {
 
@@ -54,7 +54,7 @@ final class LauncherBottomHooks {
             List<Class<?>> receivers = Targets.loadInputChannelReceivers(classLoader);
             if (receivers.isEmpty()) {
                 Logx.w("[LAUNCHER] 未找到 InputChannelCompat receiver：本 ROM 的底部手势入口可能不同，"
-                        + "策略 B 大概率不可用（会退回只挂 TIS listener）");
+                        + "底部上滑大概率拦不住（会退回只挂 TIS listener）");
             }
             for (Class<?> cls : receivers) {
                 total += hookReceiverClass(cls);
@@ -90,51 +90,50 @@ final class LauncherBottomHooks {
         } else {
             Logx.i("[LAUNCHER] 底部手势入口已挂载: " + total + " 个");
         }
-        reportToApp(total, 0);
+        reportMount(total, 0);
         return total;
     }
 
     /**
-     * 把"策略 B 挂上了几个入口"回报给 App（走 ContentProvider.update）。
+     * 把「底部手势挂上了几个入口」上报给 App 与 SystemUI。
      *
-     * 桌面进程可能比 App 更早起来（appContext 还是 null），所以带重试；
-     * 回报失败只是 UI 看不到状态，不影响拦截本身。
+     * 底部上滑的拦截在桌面进程里执行，SystemUI 自己看不到；没有这条回报，
+     * App 只能猜「到底有没有生效」。App 进程可能没起来，所以带几次重试。
      */
-    private static void reportToApp(final int count, final int attempt) {
+    private static void reportMount(final int count, final int attempt) {
         try {
-            final android.content.Context context = Ctx.appContext();
+            android.content.Context context = Ctx.appContext();
             if (context == null) {
-                if (attempt < 12) {
+                if (attempt < 8) {
                     new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
                             new Runnable() {
                                 @Override
                                 public void run() {
-                                    reportToApp(count, attempt + 1);
+                                    reportMount(count, attempt + 1);
                                 }
-                            }, 600L);
+                            }, 800L);
                 }
                 return;
             }
-            android.content.ContentValues cv = new android.content.ContentValues();
-            cv.put(io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleContract.COLUMN_LAUNCHER_STATUS,
-                    "hooks=" + count
-                            + ",v=" + HookRuntime.status.moduleVersion
-                            + ",ts=" + System.currentTimeMillis());
-            // 把桌面进程自己的日志尾部也带过去 —— 这是排查策略 B 的唯一证据来源
-            StringBuilder diag = new StringBuilder();
-            for (String line : HookRuntime.diagSnapshot(80)) {
-                diag.append(line).append('\n');
+            for (String pkg : new String[]{
+                    io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleContract.MODULE_PACKAGE,
+                    io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleContract.SYSTEMUI_PACKAGE}) {
+                try {
+                    android.content.Intent intent = new android.content.Intent(
+                            io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleContract
+                                    .ACTION_LAUNCHER_STATUS);
+                    intent.setPackage(pkg);
+                    intent.putExtra(io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleContract
+                            .EXTRA_LAUNCHER_HOOKS, count);
+                    intent.addFlags(android.content.Intent.FLAG_INCLUDE_STOPPED_PACKAGES
+                            | android.content.Intent.FLAG_RECEIVER_FOREGROUND);
+                    context.sendBroadcast(intent);
+                } catch (Throwable ignored) {
+                }
             }
-            if (diag.length() == 0) {
-                diag.append("(桌面进程没有采集到日志)");
-            }
-            cv.put(io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleContract.COLUMN_LAUNCHER_DIAG,
-                    diag.toString());
-            int rows = context.getContentResolver().update(
-                    io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleContract.RULES_URI, cv, null, null);
-            Xlog.step("[LAUNCHER] 已回报给 App: hooks=" + count + " rows=" + rows);
+            Xlog.step("[LAUNCHER] 已上报挂载数: " + count);
         } catch (Throwable t) {
-            Xlog.step("[LAUNCHER] 回报失败（不影响拦截）: " + t);
+            Xlog.step("[LAUNCHER] 上报失败（不影响拦截）: " + t);
         }
     }
 

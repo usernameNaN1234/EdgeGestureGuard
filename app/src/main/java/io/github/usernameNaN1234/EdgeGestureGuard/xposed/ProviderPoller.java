@@ -50,11 +50,11 @@ final class ProviderPoller implements Runnable {
     public void run() {
         try {
             // 已经收到过广播说明通道是通的，什么都不用做
-            if (RulesPipe.lastBroadcastAt != 0L) {
+            if (ConfigPipe.lastBroadcastAt != 0L) {
                 Logx.i("provider pull skipped: broadcast channel alive");
                 return;
             }
-            if (RulesPipe.pullFromProvider(context)) {
+            if (ConfigPipe.pullFromProvider(context)) {
                 Logx.i("provider pull ok");
                 return;
             }

@@ -53,7 +53,7 @@ final class GestureHooks {
 
     static void install(ClassLoader classLoader) {
         StatusReport status = HookRuntime.status;
-        status.moduleVersion = "1.9.0";
+        status.moduleVersion = "1.9.1";
 
         Class<?> edgeClass = null;
         try {
@@ -116,16 +116,11 @@ final class GestureHooks {
                     + "日志行贴出来，可据此补充候选名。");
         }
 
-        // 底部上滑：真正的执行方是 Launcher 进程（策略 B），SystemUI 侧不再安装任何底部 Hook。
-        // 实测结论：在 SystemUI 的返回手势通道上消费底部事件拦不住 Home，还会让游戏窗口
-        // 收不到底部 12% 的触摸 —— 对音游是纯亏，所以整条「策略 A」代码已删除。
-        ModuleConfig bottomCfg = HookRuntime.config;
-        boolean launcherOn = bottomCfg != null && bottomCfg.launcherBottom;
-        status.bottomState = launcherOn
-                ? StatusReport.BOTTOM_ATTACHED : StatusReport.BOTTOM_UNSUPPORTED;
-        status.bottomTarget = launcherOn
-                ? "底部上滑由桌面进程拦截（已开启，需 LSPosed 作用域含桌面）"
-                : "底部上滑由桌面进程执行：在 LSPosed 作用域勾选桌面并打开此开关后生效";
+        // 底部上滑：真正的执行方是 Launcher 进程（见 LauncherBottomHooks）。
+        // SystemUI 侧不装任何底部 Hook —— 实测在这里消费事件拦不住 Home，还会吃掉游戏底部判定区。
+        // 桌面进程挂载成功后会主动上报（ACTION_LAUNCHER_STATUS），那时这里才变成 attached。
+        status.bottomState = StatusReport.BOTTOM_UNKNOWN;
+        status.bottomTarget = "由桌面进程拦截（需 LSPosed 作用域含桌面，等待桌面回报…）";
         // 无论后续 IPC 初始化是否成功，先把探测结果落到 Settings.Global（App 读它不需要权限）
         try {
             Diag.write(Ctx.any());

@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  控制器主页（纯 framework 控件：LinearLayout / TextView / EditText / ListView / CheckBox / SeekBar / Button）。
-  结构：渐变头图 + 游戏模式卡片 + 状态卡片（可滚动） / 搜索行 / 应用列表（占剩余空间） / 底部操作栏。
-  ListView 不嵌在 ScrollView 里：头部用固定权重 + 内部滚动，列表拿剩余空间。
+  控制器主页（纯 framework 控件：ScrollView / LinearLayout / TextView / Switch / SeekBar / Button）。
+  结构：渐变头图 → 游戏模式状态卡（只读） → Hook 状态卡（可展开详情） → 手势设置卡
+        → 屏蔽区比例卡 → 其它开关卡；底部固定操作栏。
+  没有任何列表：游戏模式只有通知栏常驻通知 / 控制中心磁贴两个开启入口，App 内只做「状态 + 设置」。
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
@@ -11,13 +12,12 @@
     android:fitsSystemWindows="true"
     android:orientation="vertical">
 
-    <!-- ================= 头部 + 状态卡片（可滚动区域） ================= -->
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1.15"
+        android:layout_weight="1"
         android:clipToPadding="false"
-        android:fillViewport="false"
+        android:fillViewport="true"
         android:overScrollMode="never"
         android:scrollbars="none">
 
@@ -25,9 +25,9 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:paddingBottom="2dp">
+            android:paddingBottom="10dp">
 
-            <!-- 渐变头图 -->
+            <!-- ==================== 渐变头图 ==================== -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -78,7 +78,7 @@
                     android:textSize="13sp" />
             </LinearLayout>
 
-            <!-- ============ 游戏模式主开关卡片 ============ -->
+            <!-- ==================== 游戏模式状态卡（只读，无按钮） ==================== -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -106,7 +106,6 @@
                         android:textStyle="bold" />
 
                     <TextView
-                        android:id="@+id/game_state_pill"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:background="@drawable/bg_capsule_idle"
@@ -114,35 +113,29 @@
                         android:paddingTop="4dp"
                         android:paddingEnd="10dp"
                         android:paddingBottom="4dp"
-                        android:text="@string/game_state_off"
+                        android:text="@string/game_mode_badge"
                         android:textColor="@color/pill_idle_fg"
-                        android:textSize="11sp"
-                        android:textStyle="bold" />
+                        android:textSize="11sp" />
                 </LinearLayout>
 
                 <TextView
-                    android:id="@+id/game_mode_desc"
+                    android:id="@+id/game_state_text"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/game_state_off"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="28sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
                     android:lineSpacingExtra="2dp"
-                    android:text="@string/game_mode_desc_off"
+                    android:text="@string/game_mode_howto"
                     android:textColor="@color/text_secondary"
                     android:textSize="12sp" />
-
-                <Button
-                    android:id="@+id/btn_game_mode"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginTop="14dp"
-                    android:background="@drawable/bg_btn_primary"
-                    android:minHeight="0dp"
-                    android:minWidth="0dp"
-                    android:text="@string/btn_game_mode_off"
-                    android:textAllCaps="false"
-                    android:textColor="@color/on_brand"
-                    android:textSize="15sp"
-                    android:textStyle="bold" />
 
                 <TextView
                     android:id="@+id/unlock_hint"
@@ -150,13 +143,13 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
                     android:lineSpacingExtra="2dp"
-                    android:text="@string/game_mode_unlock_hint"
+                    android:text="@string/game_unlock_exit"
                     android:textColor="@color/warn_fg"
                     android:textSize="11sp"
                     android:visibility="gone" />
             </LinearLayout>
 
-            <!-- ============ 状态卡片 ============ -->
+            <!-- ==================== Hook 状态卡 ==================== -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -193,7 +186,6 @@
                         android:textSize="12sp" />
                 </LinearLayout>
 
-                <!-- 三枚状态胶囊 -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -248,46 +240,11 @@
                         android:textStyle="bold" />
                 </LinearLayout>
 
-                <!-- 规则条数 + 前台应用 -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
-
-                    <TextView
-                        android:id="@+id/rule_count"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:background="@drawable/bg_badge_off"
-                        android:paddingStart="10dp"
-                        android:paddingTop="4dp"
-                        android:paddingEnd="10dp"
-                        android:paddingBottom="4dp"
-                        android:text="@string/rule_count_unknown"
-                        android:textColor="@color/badge_off_fg"
-                        android:textSize="11sp" />
-
-                    <TextView
-                        android:id="@+id/foreground"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp"
-                        android:layout_weight="1"
-                        android:ellipsize="middle"
-                        android:gravity="end"
-                        android:maxLines="1"
-                        android:text="@string/foreground_unknown"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
-                </LinearLayout>
-
-                <!-- 详情：固定高度 + 内部滚动，展开也不会把列表挤出屏幕 -->
+                <!-- 详情：固定高度 + 内部滚动，展开也不会把下面的设置挤出屏幕 -->
                 <ScrollView
                     android:id="@+id/status_scroll"
                     android:layout_width="match_parent"
-                    android:layout_height="190dp"
+                    android:layout_height="200dp"
                     android:layout_marginTop="12dp"
                     android:background="@drawable/bg_card_inset"
                     android:padding="12dp"
@@ -306,88 +263,288 @@
                 </ScrollView>
             </LinearLayout>
 
-            <View
+            <!-- ==================== 手势设置卡 ==================== -->
+            <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="4dp" />
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:layout_marginTop="12dp"
+                android:layout_marginEnd="16dp"
+                android:background="@drawable/bg_card"
+                android:elevation="3dp"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/gestures_title"
+                    android:textColor="@color/text_primary"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:lineSpacingExtra="2dp"
+                    android:text="@string/gestures_hint"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center_vertical"
+                    android:minHeight="48dp"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/block_left"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+
+                    <Switch
+                        android:id="@+id/switch_left"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:minHeight="48dp"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/block_right"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+
+                    <Switch
+                        android:id="@+id/switch_right"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:minHeight="48dp"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/block_top_shade"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+
+                    <Switch
+                        android:id="@+id/switch_top_shade"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:minHeight="48dp"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/block_bottom"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+
+                    <Switch
+                        android:id="@+id/switch_bottom"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:lineSpacingExtra="2dp"
+                    android:text="@string/gestures_gate_hint"
+                    android:textColor="@color/text_tertiary"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <!-- ==================== 屏蔽区比例卡 ==================== -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:layout_marginTop="12dp"
+                android:layout_marginEnd="16dp"
+                android:background="@drawable/bg_card"
+                android:elevation="3dp"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/zone_title"
+                    android:textColor="@color/text_primary"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:lineSpacingExtra="2dp"
+                    android:text="@string/zone_hint"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/top_ratio_label"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:text="@string/zone_top"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp" />
+
+                <SeekBar
+                    android:id="@+id/top_ratio_bar"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:max="28" />
+
+                <TextView
+                    android:id="@+id/bottom_ratio_label"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="@string/zone_bottom"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp" />
+
+                <SeekBar
+                    android:id="@+id/bottom_ratio_bar"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:max="28" />
+            </LinearLayout>
+
+            <!-- ==================== 其它开关卡 ==================== -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:layout_marginTop="12dp"
+                android:layout_marginEnd="16dp"
+                android:background="@drawable/bg_card"
+                android:elevation="3dp"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/other_title"
+                    android:textColor="@color/text_primary"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center_vertical"
+                    android:minHeight="48dp"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/keep_unlock_title"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+
+                    <Switch
+                        android:id="@+id/switch_keep_unlock"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:lineSpacingExtra="2dp"
+                    android:text="@string/keep_unlock_desc"
+                    android:textColor="@color/text_tertiary"
+                    android:textSize="11sp" />
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:layout_marginTop="10dp"
+                    android:layout_marginBottom="10dp"
+                    android:background="@color/stroke" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:minHeight="48dp"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/hide_status_bar_title"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+
+                    <Switch
+                        android:id="@+id/switch_hide_status_bar"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:lineSpacingExtra="2dp"
+                    android:text="@string/hide_status_bar_desc"
+                    android:textColor="@color/text_tertiary"
+                    android:textSize="11sp" />
+            </LinearLayout>
         </LinearLayout>
     </ScrollView>
 
-    <!-- ================= 搜索 + 包含系统应用 ================= -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingStart="16dp"
-        android:paddingTop="8dp"
-        android:paddingEnd="16dp">
-
-        <EditText
-            android:id="@+id/search"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:background="@drawable/bg_search_field"
-            android:hint="@string/search_hint"
-            android:imeOptions="actionSearch"
-            android:importantForAutofill="no"
-            android:inputType="text"
-            android:maxLines="1"
-            android:minHeight="46dp"
-            android:paddingStart="14dp"
-            android:paddingTop="10dp"
-            android:paddingEnd="14dp"
-            android:paddingBottom="10dp"
-            android:singleLine="true"
-            android:textColor="@color/text_primary"
-            android:textColorHint="@color/text_tertiary"
-            android:textSize="14sp" />
-
-        <CheckBox
-            android:id="@+id/include_system"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:minHeight="44dp"
-            android:paddingStart="0dp"
-            android:text="@string/include_system_apps"
-            android:textColor="@color/text_secondary"
-            android:textSize="12sp" />
-    </LinearLayout>
-
-    <!-- ================= 应用列表（占剩余空间，不嵌在 ScrollView 里） ================= -->
-    <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_marginTop="2dp"
-        android:layout_weight="1">
-
-        <ListView
-            android:id="@+id/app_list"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:background="@android:color/transparent"
-            android:clipToPadding="false"
-            android:divider="@null"
-            android:dividerHeight="0dp"
-            android:fastScrollEnabled="true"
-            android:overScrollMode="ifContentScrolls"
-            android:paddingTop="2dp"
-            android:paddingBottom="8dp"
-            android:scrollbars="none" />
-
-        <TextView
-            android:id="@+id/empty_view"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:gravity="center"
-            android:text="@string/empty_list"
-            android:textColor="@color/text_tertiary"
-            android:textSize="14sp"
-            android:visibility="gone" />
-    </FrameLayout>
-
-    <!-- ================= 底部操作栏 ================= -->
+    <!-- ==================== 底部操作栏 ==================== -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -396,23 +553,9 @@
         android:padding="12dp">
 
         <Button
-            android:id="@+id/btn_tuning"
-            android:layout_width="0dp"
-            android:layout_height="44dp"
-            android:layout_weight="1"
-            android:background="@drawable/bg_btn_ghost"
-            android:minHeight="0dp"
-            android:minWidth="0dp"
-            android:text="@string/btn_tuning"
-            android:textAllCaps="false"
-            android:textColor="@color/brand_primary"
-            android:textSize="12sp" />
-
-        <Button
             android:id="@+id/btn_export_diag"
             android:layout_width="0dp"
             android:layout_height="44dp"
-            android:layout_marginStart="8dp"
             android:layout_weight="1"
             android:background="@drawable/bg_btn_ghost"
             android:minHeight="0dp"
@@ -420,7 +563,7 @@
             android:text="@string/btn_export_diag"
             android:textAllCaps="false"
             android:textColor="@color/brand_primary"
-            android:textSize="12sp" />
+            android:textSize="13sp" />
 
         <Button
             android:id="@+id/btn_sync"
@@ -434,6 +577,6 @@
             android:text="@string/btn_sync"
             android:textAllCaps="false"
             android:textColor="@color/brand_primary"
-            android:textSize="12sp" />
+            android:textSize="13sp" />
     </LinearLayout>
 </LinearLayout>

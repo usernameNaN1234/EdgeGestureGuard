@@ -3,14 +3,10 @@ package io.github.usernameNaN1234.EdgeGestureGuard.common;
 import org.json.JSONObject;
 
 /**
- * 模块级配置（不是每个应用的规则，而是全局几何/行为参数）。
+ * 全局手势配置（没有「按应用规则」了 —— 游戏模式开启时这份配置对所有应用生效）。
  *
- * 只有 5 个字段：要么影响判定几何，要么影响游戏模式行为。
- * 旧版的「验证模式」「策略 A 吞事件」两个调试开关已删除 ——
- * 它们只在调试期有用，却让触摸热路径多出分支。
- *
- * 几何参数是「屏幕高度的百分比」，从屏幕边算起，合法区间 2% ~ 30%；
- * 越界一律回退默认值 —— 这是安全阀：一个 0.5 的阈值会让整个屏幕变成「边缘」。
+ * 8 个字段：4 个「屏蔽哪些手势」+ 2 个屏蔽区比例 + 2 个游戏模式行为。
+ * 不可变对象，整体替换；Hook 进程触摸热路径只读一个 volatile 引用。
  */
 public final class ModuleConfig {
 
@@ -19,25 +15,42 @@ public final class ModuleConfig {
     public static final float MIN_RATIO = 0.02f;
     public static final float MAX_RATIO = 0.30f;
 
-    public static final ModuleConfig DEFAULT =
-            new ModuleConfig(DEFAULT_TOP_RATIO, DEFAULT_BOTTOM_RATIO, false, false, true);
+    /** 屏蔽位掩码：热路径判定只需要一个 int。 */
+    public static final int MASK_LEFT = 1;
+    public static final int MASK_RIGHT = 2;
+    public static final int MASK_SHADE = 4;
+    public static final int MASK_BOTTOM = 8;
 
-    /** 顶部屏蔽区比例（0.02 ~ 0.30） */
+    public static final ModuleConfig DEFAULT = new ModuleConfig(
+            true, true, true, true,
+            DEFAULT_TOP_RATIO, DEFAULT_BOTTOM_RATIO, false, true);
+
+    /** 屏蔽左边缘返回 */
+    public final boolean blockLeft;
+    /** 屏蔽右边缘返回 */
+    public final boolean blockRight;
+    /** 屏蔽顶部下拉通知栏 */
+    public final boolean blockTopShade;
+    /** 屏蔽底部上滑（回桌面 / 最近任务） */
+    public final boolean blockBottom;
+    /** 顶部屏蔽区占屏幕高度的比例（0.02 ~ 0.30） */
     public final float topZoneRatio;
-    /** 底部屏蔽区比例（0.02 ~ 0.30） */
+    /** 底部屏蔽区占屏幕高度的比例（0.02 ~ 0.30） */
     public final float bottomZoneRatio;
-    /** 是否允许 Launcher 进程内的底部 Hook（策略 B，需要把桌面加进作用域） */
-    public final boolean launcherBottom;
     /** 锁屏→解锁后是否保持游戏模式（默认 false = 自动退出） */
     public final boolean keepOnUnlock;
-    /** 游戏模式期间隐藏顶部状态栏（默认 true） */
+    /** 游戏模式期间隐藏顶部状态栏 */
     public final boolean hideStatusBar;
 
-    public ModuleConfig(float topZoneRatio, float bottomZoneRatio, boolean launcherBottom,
+    public ModuleConfig(boolean blockLeft, boolean blockRight, boolean blockTopShade,
+                        boolean blockBottom, float topZoneRatio, float bottomZoneRatio,
                         boolean keepOnUnlock, boolean hideStatusBar) {
+        this.blockLeft = blockLeft;
+        this.blockRight = blockRight;
+        this.blockTopShade = blockTopShade;
+        this.blockBottom = blockBottom;
         this.topZoneRatio = sane(topZoneRatio, DEFAULT_TOP_RATIO);
         this.bottomZoneRatio = sane(bottomZoneRatio, DEFAULT_BOTTOM_RATIO);
-        this.launcherBottom = launcherBottom;
         this.keepOnUnlock = keepOnUnlock;
         this.hideStatusBar = hideStatusBar;
     }
@@ -52,32 +65,73 @@ public final class ModuleConfig {
         return value;
     }
 
+    /** 当前配置对应的屏蔽位掩码（0 = 什么都不拦）。 */
+    public int mask() {
+        int mask = 0;
+        if (blockLeft) {
+            mask |= MASK_LEFT;
+        }
+        if (blockRight) {
+            mask |= MASK_RIGHT;
+        }
+        if (blockTopShade) {
+            mask |= MASK_SHADE;
+        }
+        if (blockBottom) {
+            mask |= MASK_BOTTOM;
+        }
+        return mask;
+    }
+
+    public ModuleConfig withBlockLeft(boolean value) {
+        return new ModuleConfig(value, blockRight, blockTopShade, blockBottom,
+                topZoneRatio, bottomZoneRatio, keepOnUnlock, hideStatusBar);
+    }
+
+    public ModuleConfig withBlockRight(boolean value) {
+        return new ModuleConfig(blockLeft, value, blockTopShade, blockBottom,
+                topZoneRatio, bottomZoneRatio, keepOnUnlock, hideStatusBar);
+    }
+
+    public ModuleConfig withBlockTopShade(boolean value) {
+        return new ModuleConfig(blockLeft, blockRight, value, blockBottom,
+                topZoneRatio, bottomZoneRatio, keepOnUnlock, hideStatusBar);
+    }
+
+    public ModuleConfig withBlockBottom(boolean value) {
+        return new ModuleConfig(blockLeft, blockRight, blockTopShade, value,
+                topZoneRatio, bottomZoneRatio, keepOnUnlock, hideStatusBar);
+    }
+
     public ModuleConfig withTopRatio(float value) {
-        return new ModuleConfig(value, bottomZoneRatio, launcherBottom, keepOnUnlock, hideStatusBar);
+        return new ModuleConfig(blockLeft, blockRight, blockTopShade, blockBottom,
+                value, bottomZoneRatio, keepOnUnlock, hideStatusBar);
     }
 
     public ModuleConfig withBottomRatio(float value) {
-        return new ModuleConfig(topZoneRatio, value, launcherBottom, keepOnUnlock, hideStatusBar);
-    }
-
-    public ModuleConfig withLauncherBottom(boolean value) {
-        return new ModuleConfig(topZoneRatio, bottomZoneRatio, value, keepOnUnlock, hideStatusBar);
+        return new ModuleConfig(blockLeft, blockRight, blockTopShade, blockBottom,
+                topZoneRatio, value, keepOnUnlock, hideStatusBar);
     }
 
     public ModuleConfig withKeepOnUnlock(boolean value) {
-        return new ModuleConfig(topZoneRatio, bottomZoneRatio, launcherBottom, value, hideStatusBar);
+        return new ModuleConfig(blockLeft, blockRight, blockTopShade, blockBottom,
+                topZoneRatio, bottomZoneRatio, value, hideStatusBar);
     }
 
     public ModuleConfig withHideStatusBar(boolean value) {
-        return new ModuleConfig(topZoneRatio, bottomZoneRatio, launcherBottom, keepOnUnlock, value);
+        return new ModuleConfig(blockLeft, blockRight, blockTopShade, blockBottom,
+                topZoneRatio, bottomZoneRatio, keepOnUnlock, value);
     }
 
     public JSONObject toJson() {
         JSONObject o = new JSONObject();
         try {
-            o.put("top", round(topZoneRatio));
-            o.put("bottom", round(bottomZoneRatio));
-            o.put("launcher", launcherBottom);
+            o.put("left", blockLeft);
+            o.put("right", blockRight);
+            o.put("top", blockTopShade);
+            o.put("bottom", blockBottom);
+            o.put("topZone", round(topZoneRatio));
+            o.put("bottomZone", round(bottomZoneRatio));
             o.put("keepOnUnlock", keepOnUnlock);
             o.put("hideStatusBar", hideStatusBar);
         } catch (Throwable ignored) {
@@ -91,9 +145,12 @@ public final class ModuleConfig {
         }
         try {
             return new ModuleConfig(
-                    (float) o.optDouble("top", DEFAULT_TOP_RATIO),
-                    (float) o.optDouble("bottom", DEFAULT_BOTTOM_RATIO),
-                    o.optBoolean("launcher", false),
+                    o.optBoolean("left", true),
+                    o.optBoolean("right", true),
+                    o.optBoolean("top", true),
+                    o.optBoolean("bottom", true),
+                    (float) o.optDouble("topZone", DEFAULT_TOP_RATIO),
+                    (float) o.optDouble("bottomZone", DEFAULT_BOTTOM_RATIO),
                     o.optBoolean("keepOnUnlock", false),
                     o.optBoolean("hideStatusBar", true));
         } catch (Throwable t) {
@@ -101,13 +158,14 @@ public final class ModuleConfig {
         }
     }
 
-    public void writeTo(JSONObject target) {
-        if (target == null) {
-            return;
+    public static ModuleConfig fromJson(String json) {
+        if (json == null || json.length() == 0) {
+            return DEFAULT;
         }
         try {
-            target.put("config", toJson());
-        } catch (Throwable ignored) {
+            return fromJson(new JSONObject(json));
+        } catch (Throwable t) {
+            return DEFAULT;
         }
     }
 
@@ -116,10 +174,25 @@ public final class ModuleConfig {
     }
 
     public String describe() {
-        return "top=" + Math.round(topZoneRatio * 100) + "%"
-                + " bottom=" + Math.round(bottomZoneRatio * 100) + "%"
-                + (launcherBottom ? " launcherHook=on" : "")
-                + (keepOnUnlock ? " keepOnUnlock" : "");
+        StringBuilder sb = new StringBuilder();
+        if (blockLeft) {
+            sb.append("左 ");
+        }
+        if (blockRight) {
+            sb.append("右 ");
+        }
+        if (blockTopShade) {
+            sb.append("顶 ");
+        }
+        if (blockBottom) {
+            sb.append("底 ");
+        }
+        String blocked = sb.length() == 0 ? "全部放行" : sb.toString().trim() + "已屏蔽";
+        return blocked
+                + " | 顶" + Math.round(topZoneRatio * 100) + "%"
+                + " 底" + Math.round(bottomZoneRatio * 100) + "%"
+                + (keepOnUnlock ? " | 锁屏保持" : "")
+                + (hideStatusBar ? " | 隐藏状态栏" : "");
     }
 
     @Override

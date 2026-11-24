@@ -3,61 +3,48 @@ package io.github.usernameNaN1234.EdgeGestureGuard.common;
 import android.content.Context;
 import android.content.Intent;
 
-/**
- * 跨进程消息发送封装。所有发送都在 try/catch 内，失败只记日志。
- *
- * 省电细节：规则推送**只在打开了 Launcher 底部 Hook 时**才额外发给桌面进程，
- * 否则每改一次规则就多发 7 个广播（而桌面进程根本不会用）—— 那些都白算。
- */
+/** 跨进程消息发送封装。所有发送都在 try/catch 内，失败只记日志。 */
 public final class ModuleBroadcasts {
 
     private ModuleBroadcasts() {
     }
 
-    /** App -> SystemUI（+ 可选桌面）：全量下发规则 */
-    public static void pushRules(Context context, RuleSet set) {
-        boolean includeLauncher = set != null && set.config().launcherBottom;
-        pushRules(context, set == null ? "" : set.toJson(), includeLauncher);
-    }
-
-    /** App -> SystemUI：全量下发规则（不发给桌面进程） */
-    public static void pushRules(Context context, String json) {
-        pushRules(context, json, false);
-    }
-
-    private static void pushRules(Context context, String json, boolean includeLauncher) {
+    /**
+     * App -> SystemUI + 桌面：全量下发配置。
+     *
+     * 桌面进程也要发：底部上滑由 Launcher 执行，它有自己的静态状态与配置副本。
+     */
+    public static void pushConfig(Context context, ModuleConfig config) {
+        ModuleConfig value = config == null ? ModuleConfig.DEFAULT : config;
+        String json = value.toJson().toString();
         try {
-            sendRules(context, ModuleContract.SYSTEMUI_PACKAGE, json);
-            Logx.i("rules pushed to SystemUI, " + (json == null ? 0 : json.length()) + " chars");
-            if (!includeLauncher) {
-                return;
-            }
-            // 策略 B：只有用户显式打开 Launcher 底部 Hook 时，才需要给桌面进程推规则。
+            sendConfig(context, ModuleContract.SYSTEMUI_PACKAGE, json);
             for (String launcher : ModuleContract.LAUNCHER_PACKAGES) {
                 try {
-                    sendRules(context, launcher, json);
+                    sendConfig(context, launcher, json);
                 } catch (Throwable ignored) {
-                    // 单个包失败不影响 SystemUI 的主通道
+                    // 单个包失败不影响主通道
                 }
             }
+            Logx.i("config pushed: " + value.describe());
         } catch (Throwable t) {
-            Logx.w("pushRules failed", t);
+            Logx.w("pushConfig failed", t);
         }
     }
 
-    private static void sendRules(Context context, String pkg, String json) {
-        Intent intent = new Intent(ModuleContract.ACTION_RULES_PUSH);
+    private static void sendConfig(Context context, String pkg, String json) {
+        Intent intent = new Intent(ModuleContract.ACTION_CONFIG_PUSH);
         intent.setPackage(pkg);
-        intent.putExtra(ModuleContract.EXTRA_RULES_JSON, json == null ? "" : json);
+        intent.putExtra(ModuleContract.EXTRA_CONFIG_JSON, json);
         intent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES | Intent.FLAG_RECEIVER_FOREGROUND);
         context.sendBroadcast(intent);
     }
 
     /**
-     * App -> SystemUI：进入 / 退出「游戏模式」。
+     * App -> SystemUI + 桌面：进入 / 退出游戏模式。
      *
-     * 只发命令、不假设结果：真正的状态以 SystemUI 回推的 StatusReport.armed 为准。
-     * 桌面进程同样需要这条命令（底部 Hook 的 isArmed 是各进程独立的静态状态）。
+     * 只发命令、不假设结果：真实状态以 SystemUI 回推的 StatusReport.armed 为准。
+     * 桌面进程必须同步收到，否则它那边的 isArmed 永远是 false（底部上滑会一直放行）。
      */
     public static void sendArmCommand(Context context, boolean arm) {
         try {
@@ -65,8 +52,7 @@ public final class ModuleBroadcasts {
             for (String launcher : ModuleContract.LAUNCHER_PACKAGES) {
                 send(context, launcher, arm);
             }
-            Logx.i("arm command sent to SystemUI + " + ModuleContract.LAUNCHER_PACKAGES.length
-                    + " launcher packages: " + (arm ? "ARM" : "DISARM"));
+            Logx.i("arm command sent: " + (arm ? "ARM" : "DISARM"));
         } catch (Throwable t) {
             Logx.w("sendArmCommand failed", t);
         }
@@ -82,6 +68,25 @@ public final class ModuleBroadcasts {
         }
     }
 
+    /** SystemUI -> 桌面：把当前游戏模式状态同步给桌面进程（避免桌面重启后状态丢失） */
+    public static void broadcastArmToLaunchers(Context context, boolean arm) {
+        for (String launcher : ModuleContract.LAUNCHER_PACKAGES) {
+            send(context, launcher, arm);
+        }
+    }
+
+    /** 桌面进程 -> SystemUI：问当前游戏模式状态（SystemUI 会回广播 ARM/DISARM 给桌面） */
+    public static void queryArmState(Context context) {
+        try {
+            Intent intent = new Intent(ModuleContract.ACTION_ARM_QUERY);
+            intent.setPackage(ModuleContract.SYSTEMUI_PACKAGE);
+            intent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES | Intent.FLAG_RECEIVER_FOREGROUND);
+            context.sendBroadcast(intent);
+        } catch (Throwable t) {
+            Logx.w("queryArmState failed", t);
+        }
+    }
+
     /** App -> SystemUI：请求一份状态报告 */
     public static void requestStatus(Context context) {
         try {
@@ -94,20 +99,20 @@ public final class ModuleBroadcasts {
         }
     }
 
-    /** SystemUI -> App：请求重新推送规则（SystemUI 刚启动/重启） */
-    public static void requestRulesFromApp(Context context) {
+    /** Hook 进程 -> App：请求重新推送配置（SystemUI / 桌面刚启动） */
+    public static void requestConfigFromApp(Context context) {
         try {
-            Intent intent = new Intent(ModuleContract.ACTION_RULES_REQUEST);
+            Intent intent = new Intent(ModuleContract.ACTION_CONFIG_REQUEST);
             intent.setPackage(ModuleContract.MODULE_PACKAGE);
             intent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES | Intent.FLAG_RECEIVER_FOREGROUND);
             context.sendBroadcast(intent);
-            Logx.i("asked module app to push rules");
+            Logx.i("asked module app to push config");
         } catch (Throwable t) {
-            Logx.w("requestRulesFromApp failed", t);
+            Logx.w("requestConfigFromApp failed", t);
         }
     }
 
-    /** SystemUI -> App：状态报告 */
+    /** Hook 进程 -> App：状态报告 */
     public static void pushStatus(Context context, String statusJson) {
         try {
             Intent intent = new Intent(ModuleContract.ACTION_STATUS_PUSH);

@@ -34,7 +34,7 @@ public final class StatusBus {
             if (app == null) {
                 app = context;
             }
-            app.getSharedPreferences(ModuleContract.PREFS_RULES, Context.MODE_PRIVATE)
+            app.getSharedPreferences(ModuleContract.PREFS_CONFIG, Context.MODE_PRIVATE)
                     .edit()
                     .putString(ModuleContract.PREF_STATUS_JSON, json)
                     .apply();
@@ -63,7 +63,7 @@ public final class StatusBus {
             if (app == null) {
                 app = context;
             }
-            String json = app.getSharedPreferences(ModuleContract.PREFS_RULES, Context.MODE_PRIVATE)
+            String json = app.getSharedPreferences(ModuleContract.PREFS_CONFIG, Context.MODE_PRIVATE)
                     .getString(ModuleContract.PREF_STATUS_JSON, null);
             if (json != null && json.length() > 0) {
                 return StatusReport.fromJson(json);

@@ -6,13 +6,7 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Hook 进程 -> App 的状态报告。
- * 用户可以直接在 UI 上看到：到底挂载到了哪个类/方法、底部手势是否可用、
- * 通知栏下拉拦截挂到了哪个类、前台检测走哪一档。
- *
- * 关键原则：**能测到就报数，测不到就说"不可用"**，绝不写"已支持"来安慰用户。
- */
+/** Hook 进程 -> App 的状态报告（UI 直接展示）。 */
 public final class StatusReport {
 
     public static final String BOTTOM_ATTACHED = "attached";
@@ -28,26 +22,20 @@ public final class StatusReport {
     public String edgeMetrics = "";
     public String bottomState = BOTTOM_UNKNOWN;
     public String bottomTarget = "";
-    /** 底部坐标判断的实测计数："seen=N blocked=N"（seen=0 即证明这条通道收不到底部事件） */
-    public String bottomMeasure = "";
     public String shadeState = SHADE_UNKNOWN;
     public String shadeTarget = "";
-    /** Launcher 进程（策略 B）的挂载情况；空 = 没加载到桌面进程（正常） */
-    public String launcherState = "";
+    /** 几何摘要：屏幕高度 / 顶部区 / 底部区像素 */
     public String zoneConfig = "";
-    /** 「游戏模式」会话是否开启（顶部下拉 + 底部上滑 的总闸） */
+    /** 当前生效的全局手势配置摘要 */
+    public String configSummary = "";
+    /** 游戏模式是否开启 */
     public boolean armed;
-    /** 谁打开的（tile / notification / app / …），用于 UI 显示与排障 */
+    /** 谁打开的（tile / notification / app / …） */
     public String armedSource = "";
-    public String foregroundStrategy = "none";
-    public String foregroundError = "";
-    public String foregroundPackage = "";
-    public String foregroundActivity = "";
-    public int ruleCount;
     public long timestamp;
-    public String moduleVersion = "1.9.0";
+    public String moduleVersion = "1.9.1";
     public final List<String> notes = new ArrayList<>();
-    /** Hook 进程的诊断日志尾部（随状态报告送来，App 直接落盘导出） */
+    /** Hook 进程的诊断日志尾部 */
     public final List<String> diag = new ArrayList<>();
 
     public String toJson() {
@@ -58,20 +46,14 @@ public final class StatusReport {
             o.put("edgeMetrics", safe(edgeMetrics));
             o.put("bottomState", bottomState == null ? BOTTOM_UNKNOWN : bottomState);
             o.put("bottomTarget", safe(bottomTarget));
-            o.put("bottomMeasure", safe(bottomMeasure));
             o.put("shadeState", shadeState == null ? SHADE_UNKNOWN : shadeState);
             o.put("shadeTarget", safe(shadeTarget));
-            o.put("launcherState", safe(launcherState));
             o.put("zoneConfig", safe(zoneConfig));
+            o.put("configSummary", safe(configSummary));
             o.put("armed", armed);
             o.put("armedSource", safe(armedSource));
-            o.put("foregroundStrategy", foregroundStrategy == null ? "none" : foregroundStrategy);
-            o.put("foregroundError", safe(foregroundError));
-            o.put("foregroundPackage", safe(foregroundPackage));
-            o.put("foregroundActivity", safe(foregroundActivity));
-            o.put("ruleCount", ruleCount);
             o.put("timestamp", timestamp);
-            o.put("moduleVersion", moduleVersion == null ? "1.0.0" : moduleVersion);
+            o.put("moduleVersion", moduleVersion == null ? "1.9.1" : moduleVersion);
             JSONArray arr = new JSONArray();
             for (String n : notes) {
                 arr.put(n);
@@ -100,20 +82,14 @@ public final class StatusReport {
             r.edgeMetrics = o.optString("edgeMetrics", "");
             r.bottomState = o.optString("bottomState", BOTTOM_UNKNOWN);
             r.bottomTarget = o.optString("bottomTarget", "");
-            r.bottomMeasure = o.optString("bottomMeasure", "");
             r.shadeState = o.optString("shadeState", SHADE_UNKNOWN);
             r.shadeTarget = o.optString("shadeTarget", "");
-            r.launcherState = o.optString("launcherState", "");
             r.zoneConfig = o.optString("zoneConfig", "");
+            r.configSummary = o.optString("configSummary", "");
             r.armed = o.optBoolean("armed", false);
             r.armedSource = o.optString("armedSource", "");
-            r.foregroundStrategy = o.optString("foregroundStrategy", "none");
-            r.foregroundError = o.optString("foregroundError", "");
-            r.foregroundPackage = o.optString("foregroundPackage", "");
-            r.foregroundActivity = o.optString("foregroundActivity", "");
-            r.ruleCount = o.optInt("ruleCount", 0);
             r.timestamp = o.optLong("timestamp", 0L);
-            r.moduleVersion = o.optString("moduleVersion", "1.0.0");
+            r.moduleVersion = o.optString("moduleVersion", "1.9.1");
             JSONArray arr = o.optJSONArray("notes");
             if (arr != null) {
                 for (int i = 0; i < arr.length(); i++) {
@@ -133,7 +109,6 @@ public final class StatusReport {
                 }
             }
         } catch (Throwable ignored) {
-            // 解析失败就当空报告
         }
         return r;
     }
@@ -148,35 +123,5 @@ public final class StatusReport {
 
     public boolean shadeUsable() {
         return SHADE_ATTACHED.equals(shadeState);
-    }
-
-    /**
-     * 底部"策略 A"的实测结论。
-     *
-     * 注意：这里刻意不看 bottomState（探测到的 HomeHandle 入口不等于能拦上滑），
-     * 而是看**真实收到过多少底部区域事件**：seen > 0 才有资格说"这条通道能看到底部触摸"。
-     */
-    public boolean bottomZoneObserved() {
-        try {
-            String s = bottomMeasure;
-            if (s == null || s.length() == 0) {
-                return false;
-            }
-            int i = s.indexOf("seen=");
-            if (i < 0) {
-                return false;
-            }
-            int j = i + 5;
-            int end = j;
-            while (end < s.length() && Character.isDigit(s.charAt(end))) {
-                end++;
-            }
-            if (end == j) {
-                return false;
-            }
-            return Integer.parseInt(s.substring(j, end)) > 0;
-        } catch (Throwable t) {
-            return false;
-        }
     }
 }

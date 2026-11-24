@@ -47,9 +47,8 @@ final class Diag {
                     + ";bottom=" + HookRuntime.status.bottomState
                     + ";shade=" + HookRuntime.status.shadeState
                     + ";armed=" + (ArmController.isArmed() ? 1 : 0)
-                    + ";rules=" + (HookRuntime.rules == null ? 0 : HookRuntime.rules.size())
-                    + ";fg=" + HookRuntime.fgPackage
-                    + ";mask=" + HookRuntime.fgMask;
+                    + ";mask=" + HookRuntime.blockMask
+                    + ";cfg=" + HookRuntime.config.describe();
             Settings.Global.putString(context.getContentResolver(), ModuleContract.DIAG_GLOBAL_KEY, value);
             Xlog.step("diag ok: " + value);
         } catch (Throwable t) {

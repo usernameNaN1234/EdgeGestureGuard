@@ -6,8 +6,6 @@ import android.os.HandlerThread;
 
 import io.github.usernameNaN1234.EdgeGestureGuard.common.Logx;
 import io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleContract;
-import io.github.usernameNaN1234.EdgeGestureGuard.common.RuleSet;
-import io.github.usernameNaN1234.EdgeGestureGuard.common.RuleStore;
 import io.github.usernameNaN1234.EdgeGestureGuard.common.StatusReport;
 
 import java.io.File;
@@ -223,32 +221,13 @@ public final class DiagExporter {
         sb.append("zoneConfig    : ").append(nz(r.zoneConfig)).append('\n');
         sb.append("armed         : ").append(r.armed)
                 .append(" (source=").append(nz(r.armedSource)).append(")\n");
-        sb.append("foreground    : ").append(nz(r.foregroundPackage)).append('/')
-                .append(nz(r.foregroundActivity))
-                .append(" [").append(nz(r.foregroundStrategy)).append("]\n");
-        sb.append("foregroundErr : ").append(nz(r.foregroundError)).append('\n');
-        sb.append("ruleCount     : ").append(r.ruleCount).append('\n');
-        sb.append("launcherState : ").append(nz(r.launcherState)).append('\n');
+        sb.append("configSummary : ").append(nz(r.configSummary)).append('\n');
         sb.append("edgeMetrics   : ").append(nz(r.edgeMetrics)).append('\n');
         sb.append("timestamp     : ").append(r.timestamp).append('\n');
 
-        sb.append("\n## 策略 B（Launcher 进程回报）\n");
-        android.content.SharedPreferences sp = context.getSharedPreferences(
-                ModuleContract.PREFS_RULES, Context.MODE_PRIVATE);
-        String launcherStatus = sp.getString(ModuleContract.PREF_LAUNCHER_STATUS, null);
-        String launcherDiag = sp.getString(ModuleContract.PREF_LAUNCHER_DIAG, null);
-        sb.append("status    : ").append(launcherStatus == null ? "(未注入：作用域没勾或没重启)" : launcherStatus).append('\n');
-        if (launcherDiag != null && launcherDiag.length() > 0) {
-            sb.append("--- 桌面进程日志 ---\n").append(launcherDiag).append('\n');
-        }
-
-        sb.append("\n## 规则\n");
-        try {
-            RuleSet set = new RuleStore(context).load();
-            sb.append(set.toJson()).append('\n');
-        } catch (Throwable t) {
-            sb.append("(读取规则失败: ").append(t).append(")\n");
-        }
+        sb.append("\n## 当前配置\n");
+        sb.append(new io.github.usernameNaN1234.EdgeGestureGuard.common.ConfigStore(context)
+                .load().toJson().toString()).append('\n');
 
         sb.append("\n## Hook 进程日志（尾 ").append(r.diag.size()).append(" 行）\n");
         for (String line : r.diag) {

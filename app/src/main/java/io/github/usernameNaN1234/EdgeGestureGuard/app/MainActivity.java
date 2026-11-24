@@ -6,85 +6,92 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
-import android.text.Editable;
-import android.text.TextWatcher;
 import android.view.View;
-import android.view.ViewGroup;
-import android.widget.AdapterView;
 import android.widget.Button;
-import android.widget.CheckBox;
 import android.widget.CompoundButton;
-import android.widget.EditText;
-import android.widget.LinearLayout;
-import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import io.github.usernameNaN1234.EdgeGestureGuard.R;
+import io.github.usernameNaN1234.EdgeGestureGuard.common.ConfigStore;
 import io.github.usernameNaN1234.EdgeGestureGuard.common.Logx;
 import io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleBroadcasts;
 import io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleConfig;
 import io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleContract;
-import io.github.usernameNaN1234.EdgeGestureGuard.common.RuleSet;
-import io.github.usernameNaN1234.EdgeGestureGuard.common.RuleStore;
 import io.github.usernameNaN1234.EdgeGestureGuard.common.StatusReport;
 
-import java.util.List;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 /**
  * 控制器 UI（纯 framework 控件，不依赖 AndroidX / Material，方便离线 aapt2 + javac 构建）。
  *
  * 页面结构（见 res/layout/activity_main.xml）：
- *   渐变头图 + 游戏模式卡片 + 状态卡片（可滚动） -> 搜索行 -> 应用列表 -> 底部操作栏。
+ *   渐变头图 → 游戏模式状态卡（只读） → Hook 状态卡（可展开详情）
+ *   → 手势设置卡 → 屏蔽区比例卡 → 其它开关卡；底部固定「导出诊断 / 重新同步」。
  *
  * 数据流：
- *   打开 -> 拉应用列表 -> 点行展开 -> 勾选左/右/顶/底 -> 立即写 SharedPreferences
- *        -> 广播给 SystemUI -> Hook 内存规则表整体替换 -> 下一次触摸立刻生效。
+ *   打开 -> 读 ConfigStore -> 绑定开关/比例 -> 主动推配置 + 请求状态
+ *   -> SystemUI 回推 StatusReport（游戏模式 armed + Hook 挂载情况）。
  *
- * 状态权威来源：SystemUI 回推的 {@link StatusReport}（尤其 armed），App 只做遥控与展示。
+ * 游戏模式只有两个开启入口：常驻通知 / 控制中心磁贴。
+ * 本 App 不再提供「开启/关闭」按钮，只展示状态和编辑全局手势设置。
  */
 public final class MainActivity extends Activity implements StatusBus.Listener {
 
     /** 4 秒没有任何状态回报 -> 展示可执行排查清单（区分"没注入"和"注入但广播不通"）。 */
     private static final long STATUS_TIMEOUT_MS = 4000L;
+    /** 比例拖动时的防抖保存间隔。 */
+    private static final long RATIO_SAVE_DELAY_MS = 300L;
     private static final int RATIO_MIN_PERCENT = 2;
     private static final int RATIO_MAX_PERCENT = 30;
 
     // 头部
     private TextView versionView;
-    private TextView gameStatePill;
-    private TextView gameModeDesc;
-    private TextView unlockHint;
-    private Button gameModeButton;
 
-    // 状态卡片
+    // 游戏模式状态卡
+    private TextView gameStateText;
+    private TextView unlockHint;
+
+    // Hook 状态卡
     private TextView pillEdge;
     private TextView pillShade;
     private TextView pillBottom;
-    private TextView ruleCountView;
-    private TextView foregroundView;
     private TextView statusToggle;
     private TextView statusView;
     private ScrollView statusScroll;
 
-    // 列表
-    private EditText searchView;
-    private CheckBox includeSystemView;
-    private ListView listView;
-    private TextView emptyView;
+    // 手势设置卡
+    private Switch switchLeft;
+    private Switch switchRight;
+    private Switch switchTopShade;
+    private Switch switchBottom;
 
-    private AppListAdapter adapter;
-    private RuleStore store;
-    private boolean includeSystem;
-    /** 详情区是否展开（默认收起：状态日志不把下面的应用列表顶出屏幕）。 */
-    private boolean detailExpanded;
+    // 屏蔽区比例卡
+    private TextView topRatioLabel;
+    private TextView bottomRatioLabel;
+    private SeekBar topRatioBar;
+    private SeekBar bottomRatioBar;
+
+    // 其它开关卡
+    private Switch switchKeepUnlock;
+    private Switch switchHideStatusBar;
+
+    private ConfigStore configStore;
+    private ModuleConfig config = ModuleConfig.DEFAULT;
     /** 最近一次状态报告（渲染详情 + 当前游戏模式判断都要用）。 */
     private StatusReport lastReport;
 
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private volatile boolean statusReceived;
+    /** 详情区是否展开（默认收起：状态日志不把下面的设置顶出屏幕）。 */
+    private boolean detailExpanded;
+    /** 绑定配置到控件时抑制监听器，避免误推送。 */
+    private boolean bindingConfig;
 
     private final Runnable statusTimeout = new Runnable() {
         @Override
@@ -96,34 +103,44 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         }
     };
 
+    private final Runnable saveRatiosRunnable = new Runnable() {
+        @Override
+        public void run() {
+            saveRatiosNow();
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         try {
             setContentView(R.layout.activity_main);
-            store = new RuleStore(this);
+            configStore = new ConfigStore(this);
+            config = configStore.load();
 
             versionView = findViewById(R.id.version);
-            gameStatePill = findViewById(R.id.game_state_pill);
-            gameModeDesc = findViewById(R.id.game_mode_desc);
+            gameStateText = findViewById(R.id.game_state_text);
             unlockHint = findViewById(R.id.unlock_hint);
-            gameModeButton = findViewById(R.id.btn_game_mode);
             pillEdge = findViewById(R.id.pill_edge);
             pillShade = findViewById(R.id.pill_shade);
             pillBottom = findViewById(R.id.pill_bottom);
-            ruleCountView = findViewById(R.id.rule_count);
-            foregroundView = findViewById(R.id.foreground);
             statusToggle = findViewById(R.id.status_toggle);
             statusView = findViewById(R.id.status_view);
             statusScroll = findViewById(R.id.status_scroll);
-            searchView = findViewById(R.id.search);
-            includeSystemView = findViewById(R.id.include_system);
-            listView = findViewById(R.id.app_list);
-            emptyView = findViewById(R.id.empty_view);
+            switchLeft = findViewById(R.id.switch_left);
+            switchRight = findViewById(R.id.switch_right);
+            switchTopShade = findViewById(R.id.switch_top_shade);
+            switchBottom = findViewById(R.id.switch_bottom);
+            topRatioLabel = findViewById(R.id.top_ratio_label);
+            bottomRatioLabel = findViewById(R.id.bottom_ratio_label);
+            topRatioBar = findViewById(R.id.top_ratio_bar);
+            bottomRatioBar = findViewById(R.id.bottom_ratio_bar);
+            switchKeepUnlock = findViewById(R.id.switch_keep_unlock);
+            switchHideStatusBar = findViewById(R.id.switch_hide_status_bar);
 
             versionView.setText(getString(R.string.app_version_fmt, versionName()));
 
-            statusScroll.setVisibility(detailExpanded ? View.VISIBLE : View.GONE);
+            statusScroll.setVisibility(View.GONE);
             updateDetailToggle();
             statusToggle.setOnClickListener(new View.OnClickListener() {
                 @Override
@@ -132,20 +149,70 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
                 }
             });
 
-            gameModeButton.setOnClickListener(new View.OnClickListener() {
+            CompoundButton.OnCheckedChangeListener gestureListener =
+                    new CompoundButton.OnCheckedChangeListener() {
+                        @Override
+                        public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                            if (bindingConfig) {
+                                return;
+                            }
+                            commitGestureSwitches();
+                        }
+                    };
+            switchLeft.setOnCheckedChangeListener(gestureListener);
+            switchRight.setOnCheckedChangeListener(gestureListener);
+            switchTopShade.setOnCheckedChangeListener(gestureListener);
+            switchBottom.setOnCheckedChangeListener(gestureListener);
+
+            switchKeepUnlock.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
                 @Override
-                public void onClick(View v) {
-                    applyGameMode(!currentArmed());
+                public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                    if (bindingConfig) {
+                        return;
+                    }
+                    commitConfig(config.withKeepOnUnlock(isChecked));
                 }
             });
 
-            Button tuningButton = findViewById(R.id.btn_tuning);
-            tuningButton.setOnClickListener(new View.OnClickListener() {
+            switchHideStatusBar.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
                 @Override
-                public void onClick(View v) {
-                    showTuningDialog();
+                public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                    if (bindingConfig) {
+                        return;
+                    }
+                    commitConfig(config.withHideStatusBar(isChecked));
                 }
             });
+
+            SeekBar.OnSeekBarChangeListener ratioListener = new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                    try {
+                        int percent = clampPercent(progress + RATIO_MIN_PERCENT);
+                        if (seekBar == topRatioBar) {
+                            topRatioLabel.setText(zoneLabel(R.string.zone_top, percent));
+                        } else if (seekBar == bottomRatioBar) {
+                            bottomRatioLabel.setText(zoneLabel(R.string.zone_bottom, percent));
+                        }
+                        if (fromUser) {
+                            scheduleRatioSave();
+                        }
+                    } catch (Throwable t) {
+                        Logx.w("ratio progress failed", t);
+                    }
+                }
+
+                @Override
+                public void onStartTrackingTouch(SeekBar seekBar) {
+                }
+
+                @Override
+                public void onStopTrackingTouch(SeekBar seekBar) {
+                    saveRatiosNow();
+                }
+            };
+            topRatioBar.setOnSeekBarChangeListener(ratioListener);
+            bottomRatioBar.setOnSeekBarChangeListener(ratioListener);
 
             Button exportButton = findViewById(R.id.btn_export_diag);
             exportButton.setOnClickListener(new View.OnClickListener() {
@@ -163,65 +230,11 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
                 }
             });
 
+            bindConfigToUi();
             ensureNotificationPermission();
 
-            adapter = new AppListAdapter(this, store, new AppListAdapter.Listener() {
-                @Override
-                public void onRulesChanged(String packageName, boolean blockLeft,
-                                           boolean blockRight, boolean blockBottom,
-                                           boolean blockTopShade) {
-                    try {
-                        RuleSet rules = store.load();
-                        ModuleBroadcasts.pushRules(MainActivity.this, rules);
-                        Logx.i("rule changed: " + packageName
-                                + " L=" + blockLeft + " R=" + blockRight
-                                + " B=" + blockBottom + " T=" + blockTopShade
-                                + " total=" + rules.size());
-                    } catch (Throwable t) {
-                        Logx.w("push rules after change failed", t);
-                    }
-                }
-            });
-            listView.setAdapter(adapter);
-            listView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
-                @Override
-                public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-                    adapter.toggle(position);
-                }
-            });
-
-            searchView.addTextChangedListener(new TextWatcher() {
-                @Override
-                public void beforeTextChanged(CharSequence s, int start, int count, int after) {
-                }
-
-                @Override
-                public void onTextChanged(CharSequence s, int start, int before, int count) {
-                }
-
-                @Override
-                public void afterTextChanged(Editable s) {
-                    try {
-                        adapter.setQuery(s == null ? "" : s.toString());
-                        updateEmptyView();
-                    } catch (Throwable t) {
-                        Logx.w("search filter failed", t);
-                    }
-                }
-            });
-
-            includeSystemView.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-                @Override
-                public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                    includeSystem = isChecked;
-                    loadApps();
-                }
-            });
-
-            includeSystem = includeSystemView.isChecked();
-            updateGameModeUi(currentArmed());
             renderWaiting();
-            loadApps();
+            renderGameState(currentArmed());
             StatusReport cached = StatusBus.last(this);
             if (cached != null) {
                 renderStatus(cached);
@@ -241,17 +254,17 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         uiHandler.removeCallbacks(statusTimeout);
         uiHandler.postDelayed(statusTimeout, STATUS_TIMEOUT_MS);
         try {
-            updateGameModeUi(currentArmed());
-            // SystemUI 可能刚重启，主动补推一次规则
-            ModuleBroadcasts.pushRules(this, store.load());
+            config = configStore.load();
+            bindConfigToUi();
+            // SystemUI 可能刚重启：主动补推一次配置并请求状态，随后以回推为准
+            ModuleBroadcasts.pushConfig(this, config);
             ModuleBroadcasts.requestStatus(this);
-            // 通知/磁贴的显示跟随"最近一次已知状态"，随后会被 SystemUI 的回推纠正
-            ArmNotifier.refresh(this, currentArmed());
             StatusReport last = StatusBus.last(this);
             if (last != null) {
                 renderStatus(last);
             } else {
                 renderWaiting();
+                renderGameState(currentArmed());
             }
         } catch (Throwable t) {
             Logx.w("onResume sync failed", t);
@@ -262,6 +275,7 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
     protected void onPause() {
         StatusBus.setListener(null);
         uiHandler.removeCallbacks(statusTimeout);
+        uiHandler.removeCallbacks(saveRatiosRunnable);
         super.onPause();
     }
 
@@ -277,32 +291,76 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
     }
 
     // ------------------------------------------------------------------
-    // 应用列表
+    // 配置绑定与保存（改完立即 save + pushConfig）
     // ------------------------------------------------------------------
 
-    private void loadApps() {
+    private void bindConfigToUi() {
         try {
-            emptyView.setVisibility(View.GONE);
-            new AppListLoader(this).loadAsync(includeSystem, new AppListLoader.Callback() {
-                @Override
-                public void onLoaded(List<AppEntry> apps) {
-                    try {
-                        adapter.setData(apps);
-                        updateEmptyView();
-                    } catch (Throwable t) {
-                        Logx.w("apply app list failed", t);
-                    }
-                }
-            });
+            bindingConfig = true;
+            switchLeft.setChecked(config.blockLeft);
+            switchRight.setChecked(config.blockRight);
+            switchTopShade.setChecked(config.blockTopShade);
+            switchBottom.setChecked(config.blockBottom);
+            switchKeepUnlock.setChecked(config.keepOnUnlock);
+            switchHideStatusBar.setChecked(config.hideStatusBar);
+            int topPercent = clampPercent(Math.round(config.topZoneRatio * 100f));
+            int bottomPercent = clampPercent(Math.round(config.bottomZoneRatio * 100f));
+            topRatioBar.setProgress(topPercent - RATIO_MIN_PERCENT);
+            bottomRatioBar.setProgress(bottomPercent - RATIO_MIN_PERCENT);
+            topRatioLabel.setText(zoneLabel(R.string.zone_top, topPercent));
+            bottomRatioLabel.setText(zoneLabel(R.string.zone_bottom, bottomPercent));
         } catch (Throwable t) {
-            Logx.w("loadApps failed", t);
+            Logx.w("bindConfigToUi failed", t);
+        } finally {
+            bindingConfig = false;
+        }
+        updateUnlockHint(currentArmed());
+    }
+
+    private void commitGestureSwitches() {
+        try {
+            ModuleConfig next = config
+                    .withBlockLeft(switchLeft.isChecked())
+                    .withBlockRight(switchRight.isChecked())
+                    .withBlockTopShade(switchTopShade.isChecked())
+                    .withBlockBottom(switchBottom.isChecked());
+            commitConfig(next);
+        } catch (Throwable t) {
+            Logx.w("commitGestureSwitches failed", t);
         }
     }
 
-    private void updateEmptyView() {
+    /** 保存到本地并推给 SystemUI（Hook 侧内存配置整体替换，下一次触摸立刻生效）。 */
+    private void commitConfig(ModuleConfig next) {
+        if (next == null) {
+            return;
+        }
         try {
-            emptyView.setVisibility(adapter.getCount() == 0 ? View.VISIBLE : View.GONE);
-        } catch (Throwable ignored) {
+            config = next;
+            configStore.save(next);
+            ModuleBroadcasts.pushConfig(this, next);
+            Logx.i("config saved: " + next.describe());
+            updateUnlockHint(currentArmed());
+        } catch (Throwable t) {
+            Logx.w("commitConfig failed", t);
+        }
+    }
+
+    private void scheduleRatioSave() {
+        uiHandler.removeCallbacks(saveRatiosRunnable);
+        uiHandler.postDelayed(saveRatiosRunnable, RATIO_SAVE_DELAY_MS);
+    }
+
+    private void saveRatiosNow() {
+        uiHandler.removeCallbacks(saveRatiosRunnable);
+        try {
+            int topPercent = clampPercent(topRatioBar.getProgress() + RATIO_MIN_PERCENT);
+            int bottomPercent = clampPercent(bottomRatioBar.getProgress() + RATIO_MIN_PERCENT);
+            commitConfig(config
+                    .withTopRatio(topPercent / 100f)
+                    .withBottomRatio(bottomPercent / 100f));
+        } catch (Throwable t) {
+            Logx.w("saveRatiosNow failed", t);
         }
     }
 
@@ -316,8 +374,6 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
             bindPillIdle(pillEdge, R.string.status_pill_edge_label, R.string.pill_state_wait);
             bindPillIdle(pillShade, R.string.status_pill_shade_label, R.string.pill_state_wait);
             bindPillIdle(pillBottom, R.string.status_pill_bottom_label, R.string.pill_state_wait);
-            ruleCountView.setText(R.string.rule_count_unknown);
-            foregroundView.setText(R.string.foreground_waiting);
             statusView.setText(R.string.status_loading);
             updateDetailToggle();
         } catch (Throwable t) {
@@ -331,19 +387,10 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         }
         try {
             lastReport = report;
-            // 游戏模式状态以 SystemUI 回推的 report.armed 为准
-            updateGameModeUi(report.armed);
-
+            renderGameState(report.armed);
             bindPill(pillEdge, R.string.status_pill_edge_label, report.edgeHooked);
             bindPill(pillShade, R.string.status_pill_shade_label, report.shadeUsable());
-            bindPill(pillBottom, R.string.status_pill_bottom_label, bottomHooked(report));
-
-            ruleCountView.setText(getString(R.string.rule_count_fmt, report.ruleCount));
-            String pkg = nz(report.foregroundPackage).trim();
-            foregroundView.setText(pkg.length() == 0
-                    ? getString(R.string.foreground_unknown)
-                    : getString(R.string.foreground_fmt, pkg));
-
+            bindPill(pillBottom, R.string.status_pill_bottom_label, report.bottomUsable());
             statusView.setText(buildDetail(report));
             updateDetailToggle();
         } catch (Throwable t) {
@@ -351,10 +398,36 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         }
     }
 
-    /** 底部上滑是否真的可用：attached 或 Hook 端自报 usable。 */
-    private boolean bottomHooked(StatusReport report) {
-        return report != null
-                && ("attached".equals(report.bottomState) || report.bottomUsable());
+    /** 游戏模式状态：以 SystemUI 回推的 report.armed 为准，无回推时回退 ArmClient 缓存。 */
+    private boolean currentArmed() {
+        StatusReport report = lastReport;
+        if (report != null) {
+            return report.armed;
+        }
+        return ArmClient.isArmed(this);
+    }
+
+    private void renderGameState(boolean armed) {
+        try {
+            gameStateText.setText(armed ? R.string.game_state_on : R.string.game_state_off);
+            gameStateText.setTextColor(getColor(armed
+                    ? R.color.ok_fg : R.color.text_secondary));
+            updateUnlockHint(armed);
+        } catch (Throwable t) {
+            Logx.w("renderGameState failed", t);
+        }
+    }
+
+    private void updateUnlockHint(boolean armed) {
+        try {
+            unlockHint.setVisibility(armed ? View.VISIBLE : View.GONE);
+            if (armed) {
+                unlockHint.setText(config.keepOnUnlock
+                        ? R.string.game_unlock_keep : R.string.game_unlock_exit);
+            }
+        } catch (Throwable t) {
+            Logx.w("updateUnlockHint failed", t);
+        }
     }
 
     private void bindPill(TextView pill, int labelRes, boolean mounted) {
@@ -415,30 +488,23 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         if (!report.shadeUsable()) {
             n++;
         }
-        if (!bottomHooked(report)) {
-            n++;
-        }
-        if (report.ruleCount == 0) {
-            n++;
-        }
-        String strategy = report.foregroundStrategy;
-        if (strategy == null || "none".equals(strategy) || nz(report.foregroundPackage).length() == 0) {
+        if (!report.bottomUsable()) {
             n++;
         }
         return n;
     }
 
-    /** 详情正文：完整挂载目标 + 关键配置 + 自检（默认收起在 status_scroll 里）。 */
+    /** 详情正文：完整挂载目标 + 边缘区配置 + 注入自检（默认收起在 status_scroll 里）。 */
     private String buildDetail(StatusReport report) {
         StringBuilder sb = new StringBuilder();
         sb.append("· 左右返回：").append(report.edgeHooked ? "已挂载" : "未挂载");
         appendTarget(sb, report.edgeTarget);
 
         sb.append("\n· 顶部下拉：").append(report.shadeUsable()
-                ? "已挂载" : "未挂载（当前 ROM 上此项不生效）");
+                ? "已挂载" : "未挂载（当前 ROM 上此项可能不生效）");
         appendTarget(sb, report.shadeTarget);
 
-        boolean bottom = bottomHooked(report);
+        boolean bottom = report.bottomUsable();
         sb.append("\n· 底部上滑：").append(bottom ? "已挂载" : "未挂载");
         if (nz(report.bottomState).length() > 0) {
             sb.append("（").append(report.bottomState).append("）");
@@ -448,35 +514,46 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         if (nz(report.zoneConfig).length() > 0) {
             sb.append("\n· 边缘区：").append(report.zoneConfig);
         }
-        String launcher = nz(report.launcherState).length() > 0
-                ? report.launcherState : readLauncherStatus();
-        if (nz(launcher).length() > 0) {
-            sb.append("\n· Launcher：").append(launcher);
+        if (nz(report.edgeMetrics).length() > 0) {
+            sb.append("\n· 屏幕指标：").append(report.edgeMetrics);
         }
-        sb.append("\n· 前台识别：").append(strategyName(report.foregroundStrategy));
-        String pkg = nz(report.foregroundPackage).trim();
-        if (pkg.length() > 0) {
-            sb.append("（").append(pkg).append("）");
+
+        sb.append("\n· 游戏模式：").append(report.armed ? "已开启" : "已关闭");
+        if (report.armed && nz(report.armedSource).length() > 0) {
+            sb.append("（来源：").append(sourceName(report.armedSource)).append("）");
         }
-        if (nz(report.foregroundError).length() > 0) {
-            sb.append("\n  ⚠ ").append(report.foregroundError);
+        if (report.timestamp > 0L) {
+            sb.append("\n· 状态时间：").append(formatTime(report.timestamp));
         }
-        sb.append("\n· Hook 内规则条数：").append(report.ruleCount);
+        if (!report.notes.isEmpty()) {
+            sb.append("\n· Hook 提示：");
+            int shown = 0;
+            for (String note : report.notes) {
+                if (note == null || note.length() == 0) {
+                    continue;
+                }
+                if (shown > 0) {
+                    sb.append("\n    ");
+                }
+                sb.append(note);
+                shown++;
+                if (shown >= 5) {
+                    break;
+                }
+            }
+        }
 
         // 可执行的告警（照着做即可，不用猜）
         if (!report.edgeHooked) {
-            sb.append("\n⚠ 未挂载任何手势入口：确认 LSPosed 已启用本模块、作用域只勾 SystemUI，"
+            sb.append("\n⚠ 未挂载左右返回：确认 LSPosed 已启用本模块、作用域勾选 SystemUI，"
                     + "并重启过 SystemUI/手机。");
         }
-        if (report.ruleCount == 0) {
-            sb.append("\n⚠ Hook 内规则条数为 0：点底部「重新同步」；仍为 0 时检查模块是否被冻结、"
-                    + "SystemUI 是否重启过。");
-        }
         if (!report.shadeUsable()) {
-            sb.append("\n⚠ 顶部下拉 Hook 未挂载：把 logcat 里的 'shade candidates' 行"
-                    + "贴给开发者补候选类名。");
+            sb.append("\n⚠ 顶部下拉 Hook 未挂载：把 logcat 里的 'shade candidates' 行贴给开发者补候选类名。");
         }
-        appendDiagPath(sb);
+        if (!report.bottomUsable()) {
+            sb.append("\n⚠ 底部上滑 Hook 未挂载：确认 SystemUI 已重启；部分 ROM 需等一次状态刷新。");
+        }
         appendSelfCheck(sb);
         return sb.toString();
     }
@@ -484,17 +561,6 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
     private void appendTarget(StringBuilder sb, String target) {
         if (nz(target).length() > 0) {
             sb.append("\n    ").append(target);
-        }
-    }
-
-    private void appendDiagPath(StringBuilder sb) {
-        try {
-            String path = DiagExporter.lastPath();
-            sb.append("\n· 诊断导出：").append(nz(path).length() > 0
-                    ? path
-                    : DiagExporter.dirHint(this) + "/" + DiagExporter.latestName());
-        } catch (Throwable t) {
-            Logx.w("appendDiagPath failed", t);
         }
     }
 
@@ -522,7 +588,6 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
                 sb.append("请点底部「重新同步」；仍不同步时 Hook 会改用 ContentProvider 轮询"
                         + "（约 15 秒一次）。\n");
             }
-            appendDiagPath(sb);
             appendSelfCheck(sb);
             statusView.setText(sb.toString());
 
@@ -532,69 +597,9 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
             bindPillIdle(pillEdge, R.string.status_pill_edge_label, R.string.pill_state_none);
             bindPillIdle(pillShade, R.string.status_pill_shade_label, R.string.pill_state_none);
             bindPillIdle(pillBottom, R.string.status_pill_bottom_label, R.string.pill_state_none);
-            ruleCountView.setText(R.string.rule_count_unknown);
-            foregroundView.setText(R.string.status_no_response_short);
             updateDetailToggle();
         } catch (Throwable t) {
             Logx.w("renderNoResponse failed", t);
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // 游戏模式（总闸）：通知 / 磁贴 / 本按钮 三个入口等价
-    // ------------------------------------------------------------------
-
-    private boolean currentArmed() {
-        StatusReport report = lastReport;
-        if (report != null) {
-            return report.armed;
-        }
-        return ArmClient.isArmed(this);
-    }
-
-    private void applyGameMode(boolean armed) {
-        try {
-            ArmClient.setArmed(this, armed, "app");
-            updateGameModeUi(armed);
-            Toast.makeText(this, armed
-                            ? R.string.game_mode_on_toast
-                            : R.string.game_mode_off_toast,
-                    Toast.LENGTH_LONG).show();
-        } catch (Throwable t) {
-            Logx.w("applyGameMode failed", t);
-        }
-    }
-
-    private void updateGameModeUi(boolean armed) {
-        try {
-            gameModeButton.setText(armed
-                    ? R.string.btn_game_mode_on : R.string.btn_game_mode_off);
-            gameStatePill.setText(armed
-                    ? R.string.game_state_on : R.string.game_state_off);
-            gameStatePill.setBackgroundResource(armed
-                    ? R.drawable.bg_capsule_ok : R.drawable.bg_capsule_idle);
-            gameStatePill.setTextColor(getColor(armed
-                    ? R.color.pill_ok_fg : R.color.pill_idle_fg));
-            gameModeDesc.setText(armed
-                    ? R.string.game_mode_desc_on : R.string.game_mode_desc_off);
-            unlockHint.setVisibility(armed ? View.VISIBLE : View.GONE);
-        } catch (Throwable t) {
-            Logx.w("updateGameModeUi failed", t);
-        }
-    }
-
-    /** API 33+ 才有 POST_NOTIFICATIONS；没有它"寄生通知"不会显示（磁贴与锁屏退出仍可用）。 */
-    private void ensureNotificationPermission() {
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= 33) {
-                if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
-                        != PackageManager.PERMISSION_GRANTED) {
-                    requestPermissions(
-                            new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1001);
-                }
-            }
-        } catch (Throwable t) {
-            Logx.w("ensureNotificationPermission failed", t);
         }
     }
 
@@ -616,7 +621,9 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
 
     private void resync() {
         try {
-            ModuleBroadcasts.pushRules(this, store.load());
+            config = configStore.load();
+            bindConfigToUi();
+            ModuleBroadcasts.pushConfig(this, config);
             ModuleBroadcasts.requestStatus(this);
             Toast.makeText(this, R.string.sync_toast, Toast.LENGTH_SHORT).show();
             statusReceived = false;
@@ -631,22 +638,18 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
     // 自检（Settings.Global 读取不需要权限）
     // ------------------------------------------------------------------
 
-    private String strategyName(String strategy) {
-        if (strategy == null || strategy.length() == 0 || "none".equals(strategy)) {
-            return "未知（安全默认：不屏蔽）";
-        }
-        if (strategy.startsWith("atm") || strategy.startsWith("am:")) {
-            return "ActivityTaskManager 反射查询";
-        }
-        if (strategy.startsWith("usage")) {
-            return "UsageStatsManager 兜底";
-        }
-        return strategy;
-    }
-
     private String readDiag() {
         try {
             String v = Settings.Global.getString(getContentResolver(), ModuleContract.DIAG_GLOBAL_KEY);
+            return (v == null || v.length() == 0) ? null : v;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private String readGlobal(String key) {
+        try {
+            String v = Settings.Global.getString(getContentResolver(), key);
             return (v == null || v.length() == 0) ? null : v;
         } catch (Throwable t) {
             return null;
@@ -680,70 +683,6 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         return versionName();
     }
 
-    private String readGlobal(String key) {
-        try {
-            String v = Settings.Global.getString(getContentResolver(), key);
-            return (v == null || v.length() == 0) ? null : v;
-        } catch (Throwable t) {
-            return null;
-        }
-    }
-
-    /** 读 Hook 端写在「本 App 外部目录」里的执行轨迹（不需要任何权限）。 */
-    private String readHookTrace() {
-        try {
-            java.io.File dir = getExternalFilesDir(null);
-            if (dir == null) {
-                return null;
-            }
-            java.io.File file = new java.io.File(dir, "hook-status.txt");
-            if (!file.exists()) {
-                return null;
-            }
-            java.io.FileInputStream in = new java.io.FileInputStream(file);
-            try {
-                byte[] buf = new byte[(int) Math.min(file.length(), 8192)];
-                int read = in.read(buf);
-                if (read <= 0) {
-                    return null;
-                }
-                return new String(buf, 0, read, "UTF-8");
-            } finally {
-                in.close();
-            }
-        } catch (Throwable t) {
-            return null;
-        }
-    }
-
-    /** Launcher 进程回报的策略 B 注入状态（由 RulesProvider.update 落盘）。 */
-    private String readLauncherStatus() {
-        try {
-            String v = getSharedPreferences(ModuleContract.PREFS_RULES, MODE_PRIVATE)
-                    .getString(ModuleContract.PREF_LAUNCHER_STATUS, null);
-            return (v == null || v.length() == 0) ? null : v;
-        } catch (Throwable t) {
-            return null;
-        }
-    }
-
-    /** 只保留轨迹的最后几行，方便直接看结论。 */
-    private String tailLines(String text, int maxLines) {
-        if (text == null) {
-            return null;
-        }
-        String[] lines = text.trim().split("\n");
-        int start = Math.max(0, lines.length - maxLines);
-        StringBuilder sb = new StringBuilder();
-        for (int i = start; i < lines.length; i++) {
-            if (sb.length() > 0) {
-                sb.append('\n');
-            }
-            sb.append(lines[i]);
-        }
-        return sb.toString();
-    }
-
     /**
      * 自检：必须保留两部分 —— ① 是否注入；② 版本是否一致
      * （SystemUI 里跑的是"进程启动时加载的那份代码"，装新 APK 不会替换它）。
@@ -752,7 +691,7 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         String diag = readDiag();
         String loaded = readGlobal(ModuleContract.LOADED_GLOBAL_KEY);
         sb.append("\n\n—— 自检 ——");
-        sb.append("\n· 模块版本：").append(moduleVersion());
+        sb.append("\n· 模块版本：v").append(moduleVersion());
         sb.append("\n· LSPosed Manager：").append(hasLsposed() ? "已安装" : "未检测到");
 
         // 判定以「自检记录」为准：它由 Hook 端在拿到真实 App Context 后写入
@@ -778,12 +717,6 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         }
         sb.append("\n· 注入标记：").append(loaded == null
                 ? "未写入（早期写入受限，可忽略）" : loaded);
-        String trace = tailLines(readHookTrace(), 4);
-        sb.append("\n· 轨迹文件：").append(trace == null
-                ? "未写入（可忽略，以上一行自检记录为准）" : "");
-        if (trace != null) {
-            sb.append('\n').append(trace);
-        }
     }
 
     /** 从自检记录里取 v=x.y.z。 */
@@ -811,132 +744,30 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         }
     }
 
-    // ------------------------------------------------------------------
-    // 调参对话框：顶部/底部比例 + 锁屏保持 + 隐藏状态栏 + Launcher 底部 Hook
-    // ------------------------------------------------------------------
-
-    private void showTuningDialog() {
+    /** API 33+ 才有 POST_NOTIFICATIONS；没有它"寄生通知"不会显示（磁贴与锁屏退出仍可用）。 */
+    private void ensureNotificationPermission() {
         try {
-            final RuleSet current = store.load();
-            ModuleConfig config = current.config();
-
-            LinearLayout root = new LinearLayout(this);
-            root.setOrientation(LinearLayout.VERTICAL);
-            int pad = (int) (16 * getResources().getDisplayMetrics().density);
-            root.setPadding(pad, pad, pad, pad);
-
-            final TextView hint = new TextView(this);
-            hint.setText(R.string.tuning_hint);
-            hint.setTextSize(12f);
-            hint.setPadding(0, 0, 0, dp(8));
-            root.addView(hint, matchWrap());
-
-            final TextView topLabel = new TextView(this);
-            final SeekBar topBar = createRatioBar(config.topZoneRatio);
-            topLabel.setText(zoneLabel(R.string.tuning_top,
-                    Math.round(config.topZoneRatio * 100f)));
-            root.addView(topLabel, matchWrap());
-            root.addView(topBar, matchWrap());
-
-            final TextView bottomLabel = new TextView(this);
-            final SeekBar bottomBar = createRatioBar(config.bottomZoneRatio);
-            bottomLabel.setText(zoneLabel(R.string.tuning_bottom,
-                    Math.round(config.bottomZoneRatio * 100f)));
-            root.addView(bottomLabel, matchWrap());
-            root.addView(bottomBar, matchWrap());
-
-            SeekBar.OnSeekBarChangeListener listener = new SeekBar.OnSeekBarChangeListener() {
-                @Override
-                public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                    try {
-                        if (seekBar == topBar) {
-                            topLabel.setText(zoneLabel(R.string.tuning_top,
-                                    progress + RATIO_MIN_PERCENT));
-                        } else {
-                            bottomLabel.setText(zoneLabel(R.string.tuning_bottom,
-                                    progress + RATIO_MIN_PERCENT));
-                        }
-                    } catch (Throwable t) {
-                        Logx.w("tuning seekbar failed", t);
-                    }
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(
+                            new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1001);
                 }
-
-                @Override
-                public void onStartTrackingTouch(SeekBar seekBar) {
-                }
-
-                @Override
-                public void onStopTrackingTouch(SeekBar seekBar) {
-                }
-            };
-            topBar.setOnSeekBarChangeListener(listener);
-            bottomBar.setOnSeekBarChangeListener(listener);
-
-            final CheckBox keepUnlock = createCheckBox(R.string.tuning_keep_unlock,
-                    config.keepOnUnlock);
-            root.addView(keepUnlock, matchWrap());
-
-            final CheckBox hideStatusBar = createCheckBox(R.string.tuning_hide_status_bar,
-                    config.hideStatusBar);
-            root.addView(hideStatusBar, matchWrap());
-
-            final CheckBox launcher = createCheckBox(R.string.tuning_launcher,
-                    config.launcherBottom);
-            root.addView(launcher, matchWrap());
-
-            new android.app.AlertDialog.Builder(this)
-                    .setTitle(R.string.tuning_title)
-                    .setView(root)
-                    .setPositiveButton(android.R.string.ok,
-                            new android.content.DialogInterface.OnClickListener() {
-                                @Override
-                                public void onClick(android.content.DialogInterface dialog, int which) {
-                                    saveTuning(topBar.getProgress() + RATIO_MIN_PERCENT,
-                                            bottomBar.getProgress() + RATIO_MIN_PERCENT,
-                                            keepUnlock.isChecked(),
-                                            hideStatusBar.isChecked(),
-                                            launcher.isChecked(), current);
-                                }
-                            })
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .show();
+            }
         } catch (Throwable t) {
-            Logx.w("showTuningDialog failed", t);
-            Toast.makeText(this, "打开设置失败：" + t.getClass().getSimpleName(),
-                    Toast.LENGTH_LONG).show();
+            Logx.w("ensureNotificationPermission failed", t);
         }
     }
 
-    private SeekBar createRatioBar(float ratio) {
-        SeekBar bar = new SeekBar(this);
-        bar.setMax(RATIO_MAX_PERCENT - RATIO_MIN_PERCENT);
-        int percent = clampPercent(Math.round(ratio * 100f));
-        bar.setProgress(percent - RATIO_MIN_PERCENT);
-        return bar;
-    }
-
-    private CheckBox createCheckBox(int textRes, boolean checked) {
-        CheckBox box = new CheckBox(this);
-        box.setText(textRes);
-        box.setTextSize(13f);
-        box.setChecked(checked);
-        return box;
-    }
+    // ------------------------------------------------------------------
+    // 工具
+    // ------------------------------------------------------------------
 
     private static int clampPercent(int percent) {
         return Math.max(RATIO_MIN_PERCENT, Math.min(RATIO_MAX_PERCENT, percent));
     }
 
-    private LinearLayout.LayoutParams matchWrap() {
-        return new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-    }
-
-    private int dp(int value) {
-        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
-    }
-
-    /** 比例文案带像素换算：不同机型状态栏/手势条高度不同，光看百分比没概念。 */
+    /** 比例文案带像素换算：不同机型手势条高度不同，光看百分比没概念。 */
     private String zoneLabel(int resId, int percent) {
         int height = 0;
         try {
@@ -944,27 +775,29 @@ public final class MainActivity extends Activity implements StatusBus.Listener {
         } catch (Throwable ignored) {
         }
         int px = Math.round(height * (percent / 100f));
-        return getString(resId) + "：" + percent + "%（约 " + px + "px）";
+        return getString(resId) + "：" + getString(R.string.zone_ratio_fmt, percent, px);
     }
 
-    private void saveTuning(int topPercent, int bottomPercent, boolean keepOnUnlock,
-                            boolean hideStatusBar, boolean launcherBottom, RuleSet current) {
+    private static String formatTime(long timestamp) {
         try {
-            ModuleConfig base = (current == null ? ModuleConfig.DEFAULT : current.config());
-            ModuleConfig cfg = base
-                    .withTopRatio(clampPercent(topPercent) / 100f)
-                    .withBottomRatio(clampPercent(bottomPercent) / 100f)
-                    .withKeepOnUnlock(keepOnUnlock)
-                    .withHideStatusBar(hideStatusBar)
-                    .withLauncherBottom(launcherBottom);
-            RuleSet next = store.setConfig(cfg);
-            ModuleBroadcasts.pushRules(this, next);
-            Toast.makeText(this, R.string.tuning_saved, Toast.LENGTH_SHORT).show();
-            updateGameModeUi(currentArmed());
-            Logx.i("tuning saved: " + cfg.describe());
+            return new SimpleDateFormat("MM-dd HH:mm:ss", Locale.US)
+                    .format(new Date(timestamp));
         } catch (Throwable t) {
-            Logx.w("saveTuning failed", t);
+            return String.valueOf(timestamp);
         }
+    }
+
+    private static String sourceName(String source) {
+        if (source == null) {
+            return "";
+        }
+        if ("tile".equals(source)) {
+            return "控制中心磁贴";
+        }
+        if ("notification".equals(source)) {
+            return "常驻通知";
+        }
+        return source;
     }
 
     private static String nz(String value) {

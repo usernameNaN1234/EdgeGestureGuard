@@ -76,7 +76,7 @@ final class Targets {
     };
 
     /**
-     * Launcher / Quickstep 底部手势入口候选（策略 B，默认关闭）。
+     * Launcher / Quickstep 底部手势入口候选。
      *
      * AOSP 里底部上滑由 com.android.quickstep.TouchInteractionService 通过
      * InputManager.monitorGestureInput() 拿到手势通道后自己消费，**不在 SystemUI 进程**。
@@ -133,7 +133,7 @@ final class Targets {
     /**
      * 找 InputChannelCompat 的包装 receiver 类（真正持有 finishInputEvent 的那一层）。
      *
-     * 这条对「策略 B」是决定性的：AOSP 的 TouchInteractionService 只是
+     * 这条是决定性的：AOSP 的 TouchInteractionService 只是
      *   mInputMonitorCompat.getInputReceiver(looper, choreographer, this::onInputEvent)
      * 里的 **listener**，它自己 extends Service、拿不到 finishInputEvent；
      * 真正能消费事件的是 InputChannelCompat 内部那个匿名 InputEventReceiver 子类。

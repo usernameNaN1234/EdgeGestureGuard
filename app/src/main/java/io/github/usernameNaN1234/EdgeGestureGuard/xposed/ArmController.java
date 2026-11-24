@@ -62,15 +62,11 @@ final class ArmController {
                 startLockWatch(context);
             }
             startWatchdog();
-            // 游戏模刚开：立即刷新一次前台，保证第一次触摸用的就是正确的屏蔽掩码
-            try {
-                ForegroundTracker.refreshAsync();
-            } catch (Throwable ignored) {
-            }
             try {
                 StatusBarHider.enforce();
             } catch (Throwable ignored) {
             }
+            broadcastToLaunchers(true);
             pushStatus();
         } catch (Throwable t) {
             Logx.w("arm failed", t);
@@ -90,9 +86,30 @@ final class ArmController {
             if (was) {
                 Xlog.step("GAME MODE OFF (" + reason + ")");
             }
+            broadcastToLaunchers(false);
             pushStatus();
         } catch (Throwable t) {
             Logx.w("disarm failed", t);
+        }
+    }
+
+    /**
+     * 把会话状态同步给桌面进程 —— 底部上滑的拦截在 Launcher 里做，
+     * 它有自己的 isArmed 静态状态；桌面重启/漏收广播时靠这条通道补齐。
+     * 只在 SystemUI 进程里广播，避免桌面进程之间 ping-pong。
+     */
+    private static void broadcastToLaunchers(boolean arm) {
+        try {
+            Context context = HookRuntime.anyContext();
+            if (context == null
+                    || !io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleContract.SYSTEMUI_PACKAGE
+                    .equals(context.getPackageName())) {
+                return;
+            }
+            io.github.usernameNaN1234.EdgeGestureGuard.common.ModuleBroadcasts
+                    .broadcastArmToLaunchers(context, arm);
+        } catch (Throwable t) {
+            Logx.w("broadcastToLaunchers failed", t);
         }
     }
 
@@ -100,7 +117,7 @@ final class ArmController {
         try {
             Context context = HookRuntime.anyContext();
             if (context != null) {
-                RulesPipe.sendStatus(context);
+                ConfigPipe.sendStatus(context);
             }
         } catch (Throwable t) {
             Logx.w("pushStatus after arm change failed", t);
